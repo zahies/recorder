@@ -99,19 +99,30 @@ static void recordingTask(void *param) {
     const size_t readBufSamples = 256;
     int32_t readBuf[readBufSamples];
     size_t bytesRead;
+    uint32_t debugCounter = 0;
 
     for (;;) {
         if (recording) {
             esp_err_t err = i2s_read(I2S_PORT, readBuf, sizeof(readBuf), &bytesRead, portMAX_DELAY);
             if (err == ESP_OK && bytesRead > 0) {
                 size_t samplesRead = bytesRead / sizeof(int32_t);
+
+                // Print debug info every ~0.5s
+                debugCounter++;
+                if (debugCounter % 32 == 1) {
+                    Serial.printf("I2S: %u samples, raw[0]=0x%08X raw[1]=0x%08X raw[2]=0x%08X raw[3]=0x%08X\n",
+                                  samplesRead, readBuf[0], readBuf[1], readBuf[2], readBuf[3]);
+                }
+
                 for (size_t i = 0; i < samplesRead; i++) {
                     if (audioBytes + 2 > maxAudioBytes) {
                         recording = false;
                         fileReady = true;
                         break;
                     }
-                    int16_t sample = (int16_t)(readBuf[i] >> 16);
+                    // ICS43434: 24-bit data left-justified in 32-bit frame.
+                    // Shift right 14 to keep more dynamic range in 16 bits.
+                    int16_t sample = (int16_t)(readBuf[i] >> 14);
                     memcpy(audioBuffer + audioBytes, &sample, 2);
                     audioBytes += 2;
                 }
@@ -157,33 +168,52 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
   .waiting    { color: #aaa; }
   .recording  { color: #e94560; }
   .ready      { color: #0f3460; }
-  a.dl { display: inline-block; margin-top: 1em; padding: 0.8em 2em;
-         background: #e94560; color: #fff; text-decoration: none;
-         border-radius: 8px; font-size: 1.1em; }
-  a.dl:hover { background: #c73550; }
+  .btn { display: inline-block; margin: 0.5em; padding: 0.8em 2em;
+         color: #fff; text-decoration: none; border: none;
+         border-radius: 8px; font-size: 1.1em; cursor: pointer; }
+  .btn-rec  { background: #e94560; }
+  .btn-stop { background: #c73550; }
+  .btn-dl   { background: #0f3460; }
   .hidden { display: none; }
 </style>
 </head>
 <body>
 <h1>ESP32 Sound Recorder</h1>
-<div id="status" class="waiting">Waiting — press PRG button to record</div>
-<a id="download" class="dl hidden" href="/download">Download WAV</a>
+<div id="status" class="waiting">Waiting</div>
+<div id="controls">
+  <button id="recBtn" class="btn btn-rec" onclick="doToggle()">Record</button>
+  <button id="stopBtn" class="btn btn-stop hidden" onclick="doToggle()">Stop</button>
+  <a id="dlBtn" class="btn btn-dl hidden" href="/download">Download WAV</a>
+</div>
 <script>
+  function doToggle() {
+    fetch('/toggle', {method:'POST'}).then(() => poll());
+  }
   function poll() {
     fetch('/status').then(r => r.json()).then(d => {
-      const el = document.getElementById('status');
-      const dl = document.getElementById('download');
+      const st  = document.getElementById('status');
+      const rec = document.getElementById('recBtn');
+      const stp = document.getElementById('stopBtn');
+      const dl  = document.getElementById('dlBtn');
       if (d.recording) {
-        el.textContent = 'Recording\u2026';
-        el.className = 'recording';
+        st.textContent = 'Recording\u2026';
+        st.className = 'recording';
+        rec.classList.add('hidden');
+        stp.classList.remove('hidden');
         dl.classList.add('hidden');
       } else if (d.file_ready) {
-        el.textContent = 'Done — download your recording';
-        el.className = 'ready';
+        st.textContent = 'Done \u2014 ' + (d.bytes / 1024).toFixed(0) + ' KB recorded';
+        st.className = 'ready';
+        rec.classList.remove('hidden');
+        rec.textContent = 'New Recording';
+        stp.classList.add('hidden');
         dl.classList.remove('hidden');
       } else {
-        el.textContent = 'Waiting — press PRG button to record';
-        el.className = 'waiting';
+        st.textContent = 'Waiting';
+        st.className = 'waiting';
+        rec.classList.remove('hidden');
+        rec.textContent = 'Record';
+        stp.classList.add('hidden');
         dl.classList.add('hidden');
       }
     }).catch(() => {});
@@ -205,8 +235,28 @@ static void handleStatus() {
     json += recording ? "true" : "false";
     json += ",\"file_ready\":";
     json += fileReady ? "true" : "false";
+    json += ",\"bytes\":";
+    json += String((unsigned long)audioBytes);
     json += "}";
     server.send(200, "application/json", json);
+}
+
+static void handleToggle() {
+    if (!recording && !fileReady) {
+        audioBytes = 0;
+        recording = true;
+        Serial.println(">> Recording started (web)");
+    } else if (recording) {
+        recording = false;
+        fileReady = true;
+        Serial.printf(">> Recording stopped (web) — %u bytes\n", (unsigned)audioBytes);
+    } else if (fileReady) {
+        audioBytes = 0;
+        fileReady = false;
+        recording = true;
+        Serial.println(">> New recording started (web)");
+    }
+    server.send(200, "text/plain", "ok");
 }
 
 static void handleDownload() {
@@ -296,6 +346,7 @@ void setup() {
     // Web server routes
     server.on("/", handleRoot);
     server.on("/status", handleStatus);
+    server.on("/toggle", HTTP_POST, handleToggle);
     server.on("/download", handleDownload);
     server.begin();
     Serial.println("Web server started on port 80");
