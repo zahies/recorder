@@ -4,9 +4,9 @@
 #include <WebServer.h>
 
 // ── Pin definitions ──────────────────────────────────────────────
-#define I2S_BCK_PIN   5   // SCK / BCLK
-#define I2S_WS_PIN    6   // WS  / LRCK
-#define I2S_DATA_PIN  7   // SD  / Data Out
+#define I2S_BCK_PIN   4   // SCK / BCLK
+#define I2S_WS_PIN    5   // LRCLK
+#define I2S_DATA_PIN  6   // SD  / Data Out
 #define BUTTON_PIN    0   // PRG button on Heltec V3
 #define LED_PIN       35  // White LED on Heltec V3
 
