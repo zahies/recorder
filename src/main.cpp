@@ -18,7 +18,7 @@
 
 // ── WiFi AP settings ────────────────────────────────────────────
 static const char *AP_SSID = "ESP32-Recorder";
-static const char *AP_PASS = "12345678";
+static const char *AP_PASS = "za12xs43";
 
 // ── Audio buffer ────────────────────────────────────────────────
 // 16 kHz × 2 bytes × 1 ch = 32 KB/s
