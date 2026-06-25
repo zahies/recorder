@@ -40,6 +40,28 @@
     .steps { text-align: left; line-height: 1.8; }
     .steps li { margin-bottom: 0.5em; }
     .note { color: #888; font-size: 0.9em; margin-top: 2em; }
+    label[for="wifiPass"] {
+      font-size: 1.1em;
+      display: block;
+      margin-bottom: 0.5em;
+    }
+    #wifiPass {
+      background: #0f3460;
+      color: #eee;
+      border: 2px solid #e94560;
+      border-radius: 8px;
+      padding: 0.6em 1em;
+      font-size: 1.1em;
+      width: 200px;
+      text-align: center;
+    }
+    #wifiPass:focus { outline: none; border-color: #ff6b81; }
+    #passError {
+      color: #e94560;
+      font-size: 0.9em;
+      margin-top: 0.5em;
+      min-height: 1.2em;
+    }
   </style>
 </head>
 <body>
@@ -49,6 +71,10 @@
   <div class="card">
     <h2>Install Firmware</h2>
     <p>Connect your Heltec WiFi LoRa 32 via USB-C, then click install.</p>
+
+    <label for="wifiPass">WiFi Password</label>
+    <input type="text" id="wifiPass" value="za12xs43" minlength="8" maxlength="31">
+    <div id="passError"></div>
 
     <esp-web-install-button manifest="manifest.json">
       <button slot="activate">Install Recorder</button>
@@ -65,7 +91,7 @@
   <div class="card">
     <h2>How to Use</h2>
     <ol class="steps">
-      <li>After flashing, connect your phone to WiFi: <b>ESP32-Recorder</b> (password: <b>za12xs43</b>)</li>
+      <li>After flashing, connect your phone to WiFi: <b>ESP32-Recorder</b> (password: <b id="displayPass">za12xs43</b>)</li>
       <li>Open <b>http://192.168.4.1</b> in your phone's browser</li>
       <li>Tap <b>Record</b> to start recording</li>
       <li>Tap <b>Stop</b> to stop</li>
@@ -74,5 +100,156 @@
   </div>
 
   <p class="note">Requires Chrome or Edge. Works on ESP32-S3 (Heltec WiFi LoRa 32 V3/V4).</p>
+
+  <script>
+    const PLACEHOLDER = '%%WIFI_PASS_PLACEHOLDER%%';
+    const FIELD_SIZE = 32;  // must match char AP_PASS[32] in firmware
+
+    let originalFirmware = null;
+    let manifestTemplate = null;
+
+    // Resolve a potentially-relative URL to absolute
+    function absUrl(base, rel) {
+      return new URL(rel, base).href;
+    }
+
+    // Fetch the original manifest and firmware on page load
+    async function init() {
+      try {
+        const manifestUrl = new URL('manifest.json', window.location.href).href;
+        const resp = await fetch(manifestUrl);
+        manifestTemplate = await resp.json();
+
+        // Find the firmware entry and fetch the binary
+        for (const build of manifestTemplate.builds) {
+          for (const part of build.parts) {
+            if (part.path.endsWith('.bin') && !part.path.includes('bootloader') && !part.path.includes('partitions') && !part.path.includes('boot_app0')) {
+              const fwUrl = absUrl(manifestUrl, part.path);
+              const fwResp = await fetch(fwUrl);
+              originalFirmware = await fwResp.arrayBuffer();
+              break;
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Failed to prefetch firmware:', e);
+      }
+    }
+
+    // Find the placeholder in the firmware and return its byte offset
+    function findPlaceholder(buffer) {
+      const bytes = new Uint8Array(buffer);
+      const needle = new TextEncoder().encode(PLACEHOLDER);
+      outer:
+      for (let i = 0; i <= bytes.length - needle.length; i++) {
+        for (let j = 0; j < needle.length; j++) {
+          if (bytes[i + j] !== needle[j]) continue outer;
+        }
+        return i;
+      }
+      return -1;
+    }
+
+    // Patch the firmware with the user's password
+    function patchFirmware(password) {
+      const patched = originalFirmware.slice(0); // copy
+      const bytes = new Uint8Array(patched);
+      const offset = findPlaceholder(patched);
+      if (offset === -1) {
+        throw new Error('Placeholder not found in firmware binary');
+      }
+      // Zero-fill the entire 32-byte field, then write the password
+      for (let i = 0; i < FIELD_SIZE; i++) {
+        bytes[offset + i] = 0;
+      }
+      const passBytes = new TextEncoder().encode(password);
+      for (let i = 0; i < passBytes.length; i++) {
+        bytes[offset + i] = passBytes[i];
+      }
+      return patched;
+    }
+
+    // Build a patched manifest with blob URL for firmware
+    function buildManifest(patchedFirmware) {
+      const manifest = JSON.parse(JSON.stringify(manifestTemplate));
+      const manifestUrl = new URL('manifest.json', window.location.href).href;
+
+      for (const build of manifest.builds) {
+        for (const part of build.parts) {
+          if (part.path.endsWith('.bin') && !part.path.includes('bootloader') && !part.path.includes('partitions') && !part.path.includes('boot_app0')) {
+            // Replace firmware path with blob URL
+            const blob = new Blob([patchedFirmware], { type: 'application/octet-stream' });
+            part.path = URL.createObjectURL(blob);
+          } else {
+            // Convert relative paths to absolute so manifest works from blob URL
+            part.path = absUrl(manifestUrl, part.path);
+          }
+        }
+      }
+      return manifest;
+    }
+
+    // Validate and apply on every input change
+    const passInput = document.getElementById('wifiPass');
+    const passError = document.getElementById('passError');
+    const displayPass = document.getElementById('displayPass');
+    const installBtn = document.querySelector('esp-web-install-button');
+
+    function validate() {
+      const pw = passInput.value;
+      displayPass.textContent = pw || '???';
+
+      if (pw.length < 8) {
+        passError.textContent = 'Password must be at least 8 characters (WPA2)';
+        return false;
+      }
+      if (pw.length > 31) {
+        passError.textContent = 'Password must be 31 characters or fewer';
+        return false;
+      }
+      passError.textContent = '';
+      return true;
+    }
+
+    passInput.addEventListener('input', validate);
+
+    // Intercept the install button click to patch firmware first
+    installBtn.addEventListener('click', async (e) => {
+      if (!validate()) {
+        e.preventDefault();
+        e.stopPropagation();
+        passInput.focus();
+        return;
+      }
+
+      if (!originalFirmware || !manifestTemplate) {
+        e.preventDefault();
+        e.stopPropagation();
+        passError.textContent = 'Firmware not loaded yet, please wait...';
+        await init();
+        if (!originalFirmware) {
+          passError.textContent = 'Failed to load firmware. Check console.';
+          return;
+        }
+        passError.textContent = '';
+      }
+
+      try {
+        const patched = patchFirmware(passInput.value);
+        const manifest = buildManifest(patched);
+        const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
+        const manifestUrl = URL.createObjectURL(manifestBlob);
+        installBtn.setAttribute('manifest', manifestUrl);
+      } catch (err) {
+        e.preventDefault();
+        e.stopPropagation();
+        passError.textContent = 'Patch error: ' + err.message;
+        console.error(err);
+      }
+    }, true);  // useCapture so we run before esp-web-tools
+
+    // Start prefetching
+    init();
+  </script>
 </body>
 </html>
