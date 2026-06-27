@@ -2,7 +2,6 @@
 #include <driver/i2s.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include <WebSocketsServer.h>
 
 // ── Pin definitions ──────────────────────────────────────────────
 #define I2S_BCK_PIN   4   // SCK / BCLK
@@ -44,9 +43,8 @@ static QueueHandle_t streamQueue = NULL;
 static volatile unsigned long lastButtonPress = 0;
 #define DEBOUNCE_MS 200
 
-// ── Servers ─────────────────────────────────────────────────────
+// ── Web server ──────────────────────────────────────────────────
 WebServer server(80);
-WebSocketsServer webSocket(81);
 
 // ── WAV header helper ────────────────────────────────────────────
 static void writeWavHeader(uint8_t *buf, uint32_t dataSize) {
@@ -145,7 +143,6 @@ static void recordingTask(void *param) {
                     int16_t sample = (int16_t)(readBuf[i] >> 14);
                     streamChunk[streamChunkPos++] = sample;
                     if (streamChunkPos >= STREAM_CHUNK_SAMPLES) {
-                        // Non-blocking send — drops chunk if queue is full
                         xQueueSend(streamQueue, streamChunk, 0);
                         streamChunkPos = 0;
                     }
@@ -223,11 +220,11 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <script>
 // ── Recording controls ──
 function doToggle() {
-  fetch('/toggle', {method:'POST'}).then(() => poll());
+  fetch('/toggle', {method:'POST'}).then(function() { poll(); });
 }
 
 function poll() {
-  fetch('/status').then(r => r.json()).then(d => {
+  fetch('/status').then(function(r) { return r.json(); }).then(function(d) {
     var st  = document.getElementById('status');
     var rec = document.getElementById('recBtn');
     var stp = document.getElementById('stopBtn');
@@ -277,22 +274,36 @@ function poll() {
 setInterval(poll, 500);
 poll();
 
-// ── WebSocket spectrum ──
-var ws = null;
-var specRunning = false;
+// ── Spectrum streaming via HTTP polling ──
+var streaming = false;
 
 function startSpectrum() {
-  if (ws && ws.readyState <= 1) { ws.send('start'); return; }
-  var host = location.hostname;
-  ws = new WebSocket('ws://' + host + ':81');
-  ws.binaryType = 'arraybuffer';
-  ws.onopen = function() { ws.send('start'); specRunning = true; poll(); };
-  ws.onmessage = function(e) { if (e.data instanceof ArrayBuffer) processPCM(e.data); };
-  ws.onclose = function() { specRunning = false; poll(); };
+  fetch('/stream-start', {method:'POST'}).then(function() {
+    streaming = true;
+    poll();
+    fetchChunk();
+  });
 }
 
 function stopSpectrum() {
-  if (ws && ws.readyState <= 1) ws.send('stop');
+  streaming = false;
+  fetch('/stream-stop', {method:'POST'}).then(function() { poll(); });
+}
+
+function fetchChunk() {
+  if (!streaming) return;
+  fetch('/stream-chunk').then(function(r) {
+    if (r.status === 200) {
+      return r.arrayBuffer().then(function(buf) {
+        processPCM(buf);
+        setTimeout(fetchChunk, 15);
+      });
+    } else {
+      setTimeout(fetchChunk, 30);
+    }
+  }).catch(function() {
+    setTimeout(fetchChunk, 100);
+  });
 }
 
 // ── FFT + Spectrum Drawing ──
@@ -300,6 +311,7 @@ var canvas = document.getElementById('spectrumCanvas');
 var ctx = canvas.getContext('2d');
 var N = 512;
 var smoothBars = new Float32Array(64);
+for (var sb = 0; sb < 64; sb++) smoothBars[sb] = -100;
 
 // Hann window
 var hann = new Float32Array(N);
@@ -346,8 +358,8 @@ function processPCM(buf) {
 
   fft(re, im);
 
-  // Compute magnitude in dB for 64 bars (0 to N/2 = 256 bins → 0 to 8kHz)
-  var binsPerBar = 4; // 256 bins / 64 bars
+  // Compute magnitude in dB for 64 bars (0 to N/2 = 256 bins = 0 to 8kHz)
+  var binsPerBar = 4;
   var bars = new Float32Array(64);
   for (var b = 0; b < 64; b++) {
     var sum = 0;
@@ -380,8 +392,8 @@ function drawSpectrum() {
   for (var b = 0; b < 64; b++) {
     var db = Math.max(dbMin, Math.min(dbMax, smoothBars[b]));
     var h = ((db - dbMin) / (dbMax - dbMin)) * plotH;
+    if (h < 1) continue;
     var x = b * barW;
-    // Gradient: green → yellow → red
     var ratio = h / plotH;
     var r = ratio > 0.5 ? 255 : Math.round(ratio * 2 * 255);
     var g = ratio < 0.5 ? 255 : Math.round((1 - ratio) * 2 * 255);
@@ -405,7 +417,7 @@ function drawSpectrum() {
   ctx.fillText('-70dB', W - 2, plotH);
 }
 
-// Initial draw
+// Initial draw (empty spectrum)
 drawSpectrum();
 </script>
 </body>
@@ -490,35 +502,35 @@ static void handleDownload() {
     }
 }
 
-// ── WebSocket event handler ──────────────────────────────────────
-static void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
-    switch (type) {
-        case WStype_DISCONNECTED:
-            Serial.printf("[WS] Client %u disconnected\n", num);
-            // Stop streaming if no clients remain
-            if (webSocket.connectedClients() == 0 && currentState == STATE_STREAMING) {
-                currentState = STATE_IDLE;
-                Serial.println(">> Streaming stopped (no clients)");
-            }
-            break;
-        case WStype_CONNECTED:
-            Serial.printf("[WS] Client %u connected\n", num);
-            break;
-        case WStype_TEXT:
-            if (length >= 5 && memcmp(payload, "start", 5) == 0) {
-                if (currentState == STATE_IDLE) {
-                    currentState = STATE_STREAMING;
-                    Serial.println(">> Streaming started");
-                }
-            } else if (length >= 4 && memcmp(payload, "stop", 4) == 0) {
-                if (currentState == STATE_STREAMING) {
-                    currentState = STATE_IDLE;
-                    Serial.println(">> Streaming stopped");
-                }
-            }
-            break;
-        default:
-            break;
+// ── Streaming HTTP handlers ──────────────────────────────────────
+static void handleStreamStart() {
+    if (currentState == STATE_IDLE || currentState == STATE_FILE_READY) {
+        currentState = STATE_STREAMING;
+        Serial.println(">> Streaming started");
+    }
+    server.send(200, "text/plain", "ok");
+}
+
+static void handleStreamStop() {
+    if (currentState == STATE_STREAMING) {
+        currentState = STATE_IDLE;
+        Serial.println(">> Streaming stopped");
+    }
+    server.send(200, "text/plain", "ok");
+}
+
+static void handleStreamChunk() {
+    if (currentState != STATE_STREAMING || !streamQueue) {
+        server.send(204, "text/plain", "");
+        return;
+    }
+    uint8_t chunk[STREAM_CHUNK_BYTES];
+    if (xQueueReceive(streamQueue, chunk, 0) == pdTRUE) {
+        WiFiClient client = server.client();
+        client.printf("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\nConnection: keep-alive\r\n\r\n", STREAM_CHUNK_BYTES);
+        client.write(chunk, STREAM_CHUNK_BYTES);
+    } else {
+        server.send(204, "text/plain", "");
     }
 }
 
@@ -554,7 +566,6 @@ void setup() {
     }
     if (!audioBuffer) {
         Serial.println("ERROR: buffer allocation failed!");
-        // Blink LED rapidly to indicate error
         for (;;) {
             digitalWrite(LED_PIN, !digitalRead(LED_PIN));
             delay(100);
@@ -586,13 +597,11 @@ void setup() {
     server.on("/status", handleStatus);
     server.on("/toggle", HTTP_POST, handleToggle);
     server.on("/download", handleDownload);
+    server.on("/stream-start", HTTP_POST, handleStreamStart);
+    server.on("/stream-stop", HTTP_POST, handleStreamStop);
+    server.on("/stream-chunk", HTTP_GET, handleStreamChunk);
     server.begin();
     Serial.println("Web server started on port 80");
-
-    // WebSocket server
-    webSocket.begin();
-    webSocket.onEvent(webSocketEvent);
-    Serial.println("WebSocket server started on port 81");
 
     // Recording task on core 1 (increased stack for streaming chunk)
     xTaskCreatePinnedToCore(recordingTask, "rec", 6144, NULL, 1, NULL, 1);
@@ -605,16 +614,9 @@ void setup() {
 // ── Loop ─────────────────────────────────────────────────────────
 void loop() {
     server.handleClient();
-    webSocket.loop();
 
-    // Dequeue PCM chunks and broadcast to WebSocket clients
-    if (currentState == STATE_STREAMING && streamQueue) {
-        uint8_t chunk[STREAM_CHUNK_BYTES];
-        while (xQueueReceive(streamQueue, chunk, 0) == pdTRUE) {
-            webSocket.broadcastBIN(chunk, STREAM_CHUNK_BYTES);
-        }
-    } else if (streamQueue) {
-        // Flush queue when not streaming
+    // Flush queue when not streaming to prevent stale data
+    if (currentState != STATE_STREAMING && streamQueue) {
         uint8_t discard[STREAM_CHUNK_BYTES];
         while (xQueueReceive(streamQueue, discard, 0) == pdTRUE) {}
     }
