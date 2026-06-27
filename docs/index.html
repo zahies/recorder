@@ -106,7 +106,7 @@
     const FIELD_SIZE = 32;  // must match char AP_PASS[32] in firmware
 
     let originalFirmware = null;
-    const firmwareUrl = new URL('firmware_merged.bin', window.location.href).href;
+    const firmwareUrl = new URL('firmware.bin', window.location.href).href;
 
     // Prefetch the firmware binary on page load
     fetch(firmwareUrl)
@@ -138,7 +138,7 @@
     // Override fetch so esp-web-tools gets our patched firmware.bin
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
-      if (typeof url === 'string' && url.endsWith('firmware_merged.bin') && originalFirmware) {
+      if (typeof url === 'string' && url.endsWith('firmware.bin') && originalFirmware) {
         try {
           const passInput = document.getElementById('wifiPass');
           const patched = patchFirmware(passInput.value);
