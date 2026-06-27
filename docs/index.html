@@ -114,6 +114,25 @@
       .then(buf => { originalFirmware = buf; })
       .catch(e => console.error('Failed to prefetch firmware:', e));
 
+    // Recalculate ESP32 image XOR checksum (0xEF ^ all segment data bytes)
+    function fixChecksum(bytes) {
+      const segCount = bytes[1];
+      let pos = 24; // 8-byte main header + 16-byte extended header
+      let checksum = 0xEF;
+      for (let s = 0; s < segCount; s++) {
+        const dataLen = bytes[pos + 4] | (bytes[pos + 5] << 8) |
+                        (bytes[pos + 6] << 16) | (bytes[pos + 7] << 24);
+        pos += 8; // skip segment header
+        for (let i = 0; i < dataLen; i++) checksum ^= bytes[pos + i];
+        pos += dataLen;
+      }
+      // Checksum byte sits after padding to 16-byte boundary
+      const pad = (16 - (pos % 16)) % 16;
+      pos += pad;
+      console.log('Checksum @' + pos + ': 0x' + bytes[pos].toString(16) + ' -> 0x' + (checksum & 0xFF).toString(16));
+      bytes[pos] = checksum & 0xFF;
+    }
+
     // Patch firmware: find placeholder, replace with password (null-padded to 32 bytes)
     function patchFirmware(password) {
       const patched = originalFirmware.slice(0);
@@ -129,9 +148,11 @@
         break;
       }
       if (offset === -1) throw new Error('Placeholder not found in firmware');
+      console.log('Placeholder found at offset ' + offset);
       for (let i = 0; i < FIELD_SIZE; i++) bytes[offset + i] = 0;
       const passBytes = new TextEncoder().encode(password);
       for (let i = 0; i < passBytes.length; i++) bytes[offset + i] = passBytes[i];
+      fixChecksum(bytes);
       return patched;
     }
 
@@ -141,7 +162,9 @@
       if (typeof url === 'string' && url.endsWith('firmware.bin') && originalFirmware) {
         try {
           const passInput = document.getElementById('wifiPass');
+          console.log('Intercepted firmware fetch, patching with password: "' + passInput.value + '"');
           const patched = patchFirmware(passInput.value);
+          console.log('Patched firmware size: ' + patched.byteLength);
           return Promise.resolve(new Response(patched, {
             headers: { 'Content-Type': 'application/octet-stream' }
           }));
