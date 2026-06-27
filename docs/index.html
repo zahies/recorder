@@ -40,6 +40,28 @@
     .steps { text-align: left; line-height: 1.8; }
     .steps li { margin-bottom: 0.5em; }
     .note { color: #888; font-size: 0.9em; margin-top: 2em; }
+    label[for="wifiPass"] {
+      font-size: 1.1em;
+      display: block;
+      margin-bottom: 0.5em;
+    }
+    #wifiPass {
+      background: #0f3460;
+      color: #eee;
+      border: 2px solid #e94560;
+      border-radius: 8px;
+      padding: 0.6em 1em;
+      font-size: 1.1em;
+      width: 200px;
+      text-align: center;
+    }
+    #wifiPass:focus { outline: none; border-color: #ff6b81; }
+    #passError {
+      color: #e94560;
+      font-size: 0.9em;
+      margin-top: 0.5em;
+      min-height: 1.2em;
+    }
   </style>
 </head>
 <body>
@@ -49,6 +71,10 @@
   <div class="card">
     <h2>Install Firmware</h2>
     <p>Connect your Heltec WiFi LoRa 32 via USB-C, then click install.</p>
+
+    <label for="wifiPass">WiFi Password</label>
+    <input type="text" id="wifiPass" value="za12xs43" minlength="8" maxlength="31">
+    <div id="passError"></div>
 
     <esp-web-install-button manifest="manifest.json">
       <button slot="activate">Install Recorder</button>
@@ -65,7 +91,7 @@
   <div class="card">
     <h2>How to Use</h2>
     <ol class="steps">
-      <li>After flashing, connect your phone to WiFi: <b>ESP32-Recorder</b> (password: <b>za12xs43</b>)</li>
+      <li>After flashing, connect your phone to WiFi: <b>ESP32-Recorder</b> (password: <b id="displayPass">za12xs43</b>)</li>
       <li>Open <b>http://192.168.4.1</b> in your phone's browser</li>
       <li>Tap <b>Record</b> to start recording</li>
       <li>Tap <b>Stop</b> to stop</li>
@@ -74,5 +100,78 @@
   </div>
 
   <p class="note">Requires Chrome or Edge. Works on ESP32-S3 (Heltec WiFi LoRa 32 V3/V4).</p>
+
+  <script>
+    const PLACEHOLDER = '%%WIFI_PASS_PLACEHOLDER%%';
+    const FIELD_SIZE = 32;
+
+    let originalFirmware = null;
+    const firmwareUrl = new URL('firmware.bin', window.location.href).href;
+
+    // Prefetch firmware on page load
+    fetch(firmwareUrl)
+      .then(r => r.arrayBuffer())
+      .then(buf => { originalFirmware = buf; })
+      .catch(e => console.error('Failed to prefetch firmware:', e));
+
+    // Patch firmware: find placeholder, replace with password (null-padded to 32 bytes)
+    function patchFirmware(password) {
+      const patched = originalFirmware.slice(0);
+      const bytes = new Uint8Array(patched);
+      const needle = new TextEncoder().encode(PLACEHOLDER);
+      let offset = -1;
+      outer:
+      for (let i = 0; i <= bytes.length - needle.length; i++) {
+        for (let j = 0; j < needle.length; j++) {
+          if (bytes[i + j] !== needle[j]) continue outer;
+        }
+        offset = i;
+        break;
+      }
+      if (offset === -1) throw new Error('Placeholder not found in firmware');
+      for (let i = 0; i < FIELD_SIZE; i++) bytes[offset + i] = 0;
+      const passBytes = new TextEncoder().encode(password);
+      for (let i = 0; i < passBytes.length; i++) bytes[offset + i] = passBytes[i];
+      return patched;
+    }
+
+    // Override fetch so esp-web-tools gets our patched firmware.bin
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.endsWith('firmware.bin') && originalFirmware) {
+        try {
+          const passInput = document.getElementById('wifiPass');
+          const patched = patchFirmware(passInput.value);
+          return Promise.resolve(new Response(patched, {
+            headers: { 'Content-Type': 'application/octet-stream' }
+          }));
+        } catch (e) {
+          console.error('Patch failed, serving original:', e);
+        }
+      }
+      return _fetch.call(this, url, opts);
+    };
+
+    const passInput = document.getElementById('wifiPass');
+    const passError = document.getElementById('passError');
+    const displayPass = document.getElementById('displayPass');
+
+    function validate() {
+      const pw = passInput.value;
+      displayPass.textContent = pw || '???';
+      if (pw.length < 8) {
+        passError.textContent = 'Password must be at least 8 characters (WPA2)';
+        return false;
+      }
+      if (pw.length > 31) {
+        passError.textContent = 'Password must be 31 characters or fewer';
+        return false;
+      }
+      passError.textContent = '';
+      return true;
+    }
+
+    passInput.addEventListener('input', validate);
+  </script>
 </body>
 </html>
