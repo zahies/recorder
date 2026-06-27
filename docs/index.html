@@ -189,7 +189,6 @@
       return manifest;
     }
 
-    // Validate and apply on every input change
     const passInput = document.getElementById('wifiPass');
     const passError = document.getElementById('passError');
     const displayPass = document.getElementById('displayPass');
@@ -211,45 +210,27 @@
       return true;
     }
 
-    passInput.addEventListener('input', validate);
-
-    // Intercept the install button click to patch firmware first
-    installBtn.addEventListener('click', async (e) => {
-      if (!validate()) {
-        e.preventDefault();
-        e.stopPropagation();
-        passInput.focus();
-        return;
-      }
-
-      if (!originalFirmware || !manifestTemplate) {
-        e.preventDefault();
-        e.stopPropagation();
-        passError.textContent = 'Firmware not loaded yet, please wait...';
-        await init();
-        if (!originalFirmware) {
-          passError.textContent = 'Failed to load firmware. Check console.';
-          return;
-        }
-        passError.textContent = '';
-      }
-
+    // Patch firmware and update manifest attribute so it's ready before click
+    function updateManifest() {
+      if (!validate() || !originalFirmware || !manifestTemplate) return;
       try {
         const patched = patchFirmware(passInput.value);
         const manifest = buildManifest(patched);
         const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
-        const manifestUrl = URL.createObjectURL(manifestBlob);
-        installBtn.setAttribute('manifest', manifestUrl);
+        installBtn.setAttribute('manifest', URL.createObjectURL(manifestBlob));
       } catch (err) {
-        e.preventDefault();
-        e.stopPropagation();
         passError.textContent = 'Patch error: ' + err.message;
         console.error(err);
       }
-    }, true);  // useCapture so we run before esp-web-tools
+    }
 
-    // Start prefetching
-    init();
+    passInput.addEventListener('input', () => {
+      validate();
+      updateManifest();
+    });
+
+    // Prefetch firmware, then set initial patched manifest
+    init().then(() => updateManifest());
   </script>
 </body>
 </html>
