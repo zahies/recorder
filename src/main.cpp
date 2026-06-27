@@ -202,7 +202,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
   .hidden { display: none; }
   #spectrumCanvas {
     display: block; margin: 1em auto; border-radius: 8px;
-    background: #0f0f23; width: 100%; max-width: 500px;
+    background: #0f0f23; width: 100%; max-width: 600px; height: auto;
   }
 </style>
 </head>
@@ -216,7 +216,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
   <button id="specBtn" class="btn btn-spec" onclick="startSpectrum()">Live Spectrum</button>
   <button id="specStopBtn" class="btn btn-spec-stop hidden" onclick="stopSpectrum()">Stop Spectrum</button>
 </div>
-<canvas id="spectrumCanvas" width="500" height="200"></canvas>
+<canvas id="spectrumCanvas" width="600" height="350"></canvas>
 <script>
 // ── Recording controls ──
 function doToggle() {
@@ -426,6 +426,9 @@ drawSpectrum();
 
 // ── Web server handlers ──────────────────────────────────────────
 static void handleRoot() {
+    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    server.sendHeader("Pragma", "no-cache");
+    server.sendHeader("Expires", "0");
     server.send(200, "text/html", INDEX_HTML);
 }
 
