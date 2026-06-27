@@ -114,8 +114,8 @@
       .then(buf => { originalFirmware = buf; })
       .catch(e => console.error('Failed to prefetch firmware:', e));
 
-    // Patch firmware: find placeholder, replace with password, recalculate SHA-256
-    async function patchFirmware(password) {
+    // Patch firmware: find placeholder, replace with password (null-padded to 32 bytes)
+    function patchFirmware(password) {
       const patched = originalFirmware.slice(0);
       const bytes = new Uint8Array(patched);
       const needle = new TextEncoder().encode(PLACEHOLDER);
@@ -132,10 +132,6 @@
       for (let i = 0; i < FIELD_SIZE; i++) bytes[offset + i] = 0;
       const passBytes = new TextEncoder().encode(password);
       for (let i = 0; i < passBytes.length; i++) bytes[offset + i] = passBytes[i];
-      // Recalculate SHA-256 hash (last 32 bytes of the image)
-      const dataToHash = patched.slice(0, patched.byteLength - 32);
-      const hash = await crypto.subtle.digest('SHA-256', dataToHash);
-      bytes.set(new Uint8Array(hash), patched.byteLength - 32);
       return patched;
     }
 
@@ -145,11 +141,10 @@
       if (typeof url === 'string' && url.endsWith('firmware.bin') && originalFirmware) {
         try {
           const passInput = document.getElementById('wifiPass');
-          return patchFirmware(passInput.value).then(patched =>
-            new Response(patched, {
-              headers: { 'Content-Type': 'application/octet-stream' }
-            })
-          );
+          const patched = patchFirmware(passInput.value);
+          return Promise.resolve(new Response(patched, {
+            headers: { 'Content-Type': 'application/octet-stream' }
+          }));
         } catch (e) {
           console.error('Patch failed, serving original:', e);
         }
