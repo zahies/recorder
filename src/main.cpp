@@ -2,6 +2,7 @@
 #include <driver/i2s.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <WebSocketsServer.h>
 
 // ── Pin definitions ──────────────────────────────────────────────
 #define I2S_BCK_PIN   4   // SCK / BCLK
@@ -29,16 +30,23 @@ static uint8_t *audioBuffer = nullptr;
 static size_t maxAudioBytes = 0;
 static volatile size_t audioBytes = 0;
 
-// ── State ────────────────────────────────────────────────────────
-static volatile bool recording  = false;
-static volatile bool fileReady  = false;
+// ── State machine ───────────────────────────────────────────────
+enum State : uint8_t { STATE_IDLE, STATE_STREAMING, STATE_RECORDING, STATE_FILE_READY };
+static volatile State currentState = STATE_IDLE;
+
+// ── Streaming queue ─────────────────────────────────────────────
+#define STREAM_CHUNK_SAMPLES 512
+#define STREAM_CHUNK_BYTES   (STREAM_CHUNK_SAMPLES * 2)  // 512 samples x 2 bytes = 1024
+#define STREAM_QUEUE_SLOTS   4
+static QueueHandle_t streamQueue = NULL;
 
 // ── Button debounce ──────────────────────────────────────────────
 static volatile unsigned long lastButtonPress = 0;
 #define DEBOUNCE_MS 200
 
-// ── Web server ───────────────────────────────────────────────────
+// ── Servers ─────────────────────────────────────────────────────
 WebServer server(80);
+WebSocketsServer webSocket(81);
 
 // ── WAV header helper ────────────────────────────────────────────
 static void writeWavHeader(uint8_t *buf, uint32_t dataSize) {
@@ -101,13 +109,18 @@ static void recordingTask(void *param) {
     size_t bytesRead;
     uint32_t debugCounter = 0;
 
+    // Streaming chunk accumulator
+    int16_t streamChunk[STREAM_CHUNK_SAMPLES];
+    size_t streamChunkPos = 0;
+
     for (;;) {
-        if (recording) {
+        State st = currentState;
+
+        if (st == STATE_RECORDING) {
             esp_err_t err = i2s_read(I2S_PORT, readBuf, sizeof(readBuf), &bytesRead, portMAX_DELAY);
             if (err == ESP_OK && bytesRead > 0) {
                 size_t samplesRead = bytesRead / sizeof(int32_t);
 
-                // Print debug info every ~0.5s
                 debugCounter++;
                 if (debugCounter % 32 == 1) {
                     Serial.printf("I2S: %u samples, raw[0]=0x%08X raw[1]=0x%08X raw[2]=0x%08X raw[3]=0x%08X\n",
@@ -116,18 +129,31 @@ static void recordingTask(void *param) {
 
                 for (size_t i = 0; i < samplesRead; i++) {
                     if (audioBytes + 2 > maxAudioBytes) {
-                        recording = false;
-                        fileReady = true;
+                        currentState = STATE_FILE_READY;
                         break;
                     }
-                    // ICS43434: 24-bit data left-justified in 32-bit frame.
-                    // Shift right 14 to keep more dynamic range in 16 bits.
                     int16_t sample = (int16_t)(readBuf[i] >> 14);
                     memcpy(audioBuffer + audioBytes, &sample, 2);
                     audioBytes += 2;
                 }
             }
+        } else if (st == STATE_STREAMING) {
+            esp_err_t err = i2s_read(I2S_PORT, readBuf, sizeof(readBuf), &bytesRead, portMAX_DELAY);
+            if (err == ESP_OK && bytesRead > 0) {
+                size_t samplesRead = bytesRead / sizeof(int32_t);
+                for (size_t i = 0; i < samplesRead; i++) {
+                    int16_t sample = (int16_t)(readBuf[i] >> 14);
+                    streamChunk[streamChunkPos++] = sample;
+                    if (streamChunkPos >= STREAM_CHUNK_SAMPLES) {
+                        // Non-blocking send — drops chunk if queue is full
+                        xQueueSend(streamQueue, streamChunk, 0);
+                        streamChunkPos = 0;
+                    }
+                }
+            }
         } else {
+            streamChunkPos = 0;
+            debugCounter = 0;
             vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
@@ -139,16 +165,15 @@ static void IRAM_ATTR buttonISR() {
     if (now - lastButtonPress < DEBOUNCE_MS) return;
     lastButtonPress = now;
 
-    if (!recording && !fileReady) {
+    State st = currentState;
+    if (st == STATE_IDLE || st == STATE_STREAMING) {
         audioBytes = 0;
-        recording = true;
-    } else if (recording) {
-        recording = false;
-        fileReady = true;
-    } else if (fileReady) {
+        currentState = STATE_RECORDING;
+    } else if (st == STATE_RECORDING) {
+        currentState = STATE_FILE_READY;
+    } else if (st == STATE_FILE_READY) {
         audioBytes = 0;
-        fileReady = false;
-        recording = true;
+        currentState = STATE_RECORDING;
     }
 }
 
@@ -167,6 +192,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
   #status { font-size: 1.4em; margin: 1.5em 0; }
   .waiting    { color: #aaa; }
   .recording  { color: #e94560; }
+  .streaming  { color: #16c79a; }
   .ready      { color: #0f3460; }
   .btn { display: inline-block; margin: 0.5em; padding: 0.8em 2em;
          color: #fff; text-decoration: none; border: none;
@@ -174,7 +200,13 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
   .btn-rec  { background: #e94560; }
   .btn-stop { background: #c73550; }
   .btn-dl   { background: #0f3460; }
+  .btn-spec { background: #16c79a; }
+  .btn-spec-stop { background: #0e8c6b; }
   .hidden { display: none; }
+  #spectrumCanvas {
+    display: block; margin: 1em auto; border-radius: 8px;
+    background: #0f0f23; width: 100%; max-width: 500px;
+  }
 </style>
 </head>
 <body>
@@ -184,42 +216,197 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
   <button id="recBtn" class="btn btn-rec" onclick="doToggle()">Record</button>
   <button id="stopBtn" class="btn btn-stop hidden" onclick="doToggle()">Stop</button>
   <a id="dlBtn" class="btn btn-dl hidden" href="/download">Download WAV</a>
+  <button id="specBtn" class="btn btn-spec" onclick="startSpectrum()">Live Spectrum</button>
+  <button id="specStopBtn" class="btn btn-spec-stop hidden" onclick="stopSpectrum()">Stop Spectrum</button>
 </div>
+<canvas id="spectrumCanvas" width="500" height="200"></canvas>
 <script>
-  function doToggle() {
-    fetch('/toggle', {method:'POST'}).then(() => poll());
+// ── Recording controls ──
+function doToggle() {
+  fetch('/toggle', {method:'POST'}).then(() => poll());
+}
+
+function poll() {
+  fetch('/status').then(r => r.json()).then(d => {
+    var st  = document.getElementById('status');
+    var rec = document.getElementById('recBtn');
+    var stp = document.getElementById('stopBtn');
+    var dl  = document.getElementById('dlBtn');
+    var specB = document.getElementById('specBtn');
+    var specS = document.getElementById('specStopBtn');
+    var state = d.state || 'idle';
+
+    if (state === 'recording') {
+      st.textContent = 'Recording\u2026';
+      st.className = 'recording';
+      rec.classList.add('hidden');
+      stp.classList.remove('hidden');
+      dl.classList.add('hidden');
+      specB.classList.add('hidden');
+      specS.classList.add('hidden');
+    } else if (state === 'file_ready') {
+      st.textContent = 'Done \u2014 ' + (d.bytes / 1024).toFixed(0) + ' KB recorded';
+      st.className = 'ready';
+      rec.classList.remove('hidden');
+      rec.textContent = 'New Recording';
+      stp.classList.add('hidden');
+      dl.classList.remove('hidden');
+      specB.classList.remove('hidden');
+      specS.classList.add('hidden');
+    } else if (state === 'streaming') {
+      st.textContent = 'Live Spectrum';
+      st.className = 'streaming';
+      rec.classList.remove('hidden');
+      rec.textContent = 'Record';
+      stp.classList.add('hidden');
+      dl.classList.add('hidden');
+      specB.classList.add('hidden');
+      specS.classList.remove('hidden');
+    } else {
+      st.textContent = 'Waiting';
+      st.className = 'waiting';
+      rec.classList.remove('hidden');
+      rec.textContent = 'Record';
+      stp.classList.add('hidden');
+      dl.classList.add('hidden');
+      specB.classList.remove('hidden');
+      specS.classList.add('hidden');
+    }
+  }).catch(function(){});
+}
+setInterval(poll, 500);
+poll();
+
+// ── WebSocket spectrum ──
+var ws = null;
+var specRunning = false;
+
+function startSpectrum() {
+  if (ws && ws.readyState <= 1) { ws.send('start'); return; }
+  var host = location.hostname;
+  ws = new WebSocket('ws://' + host + ':81');
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = function() { ws.send('start'); specRunning = true; poll(); };
+  ws.onmessage = function(e) { if (e.data instanceof ArrayBuffer) processPCM(e.data); };
+  ws.onclose = function() { specRunning = false; poll(); };
+}
+
+function stopSpectrum() {
+  if (ws && ws.readyState <= 1) ws.send('stop');
+}
+
+// ── FFT + Spectrum Drawing ──
+var canvas = document.getElementById('spectrumCanvas');
+var ctx = canvas.getContext('2d');
+var N = 512;
+var smoothBars = new Float32Array(64);
+
+// Hann window
+var hann = new Float32Array(N);
+for (var i = 0; i < N; i++) hann[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (N - 1)));
+
+// Bit-reversal permutation
+function bitrev(n, bits) {
+  var r = 0;
+  for (var i = 0; i < bits; i++) { r = (r << 1) | (n & 1); n >>= 1; }
+  return r;
+}
+
+// Radix-2 FFT (in-place, complex arrays re/im)
+function fft(re, im) {
+  var n = re.length, bits = Math.round(Math.log2(n));
+  for (var i = 0; i < n; i++) {
+    var j = bitrev(i, bits);
+    if (j > i) {
+      var t = re[i]; re[i] = re[j]; re[j] = t;
+      t = im[i]; im[i] = im[j]; im[j] = t;
+    }
   }
-  function poll() {
-    fetch('/status').then(r => r.json()).then(d => {
-      const st  = document.getElementById('status');
-      const rec = document.getElementById('recBtn');
-      const stp = document.getElementById('stopBtn');
-      const dl  = document.getElementById('dlBtn');
-      if (d.recording) {
-        st.textContent = 'Recording\u2026';
-        st.className = 'recording';
-        rec.classList.add('hidden');
-        stp.classList.remove('hidden');
-        dl.classList.add('hidden');
-      } else if (d.file_ready) {
-        st.textContent = 'Done \u2014 ' + (d.bytes / 1024).toFixed(0) + ' KB recorded';
-        st.className = 'ready';
-        rec.classList.remove('hidden');
-        rec.textContent = 'New Recording';
-        stp.classList.add('hidden');
-        dl.classList.remove('hidden');
-      } else {
-        st.textContent = 'Waiting';
-        st.className = 'waiting';
-        rec.classList.remove('hidden');
-        rec.textContent = 'Record';
-        stp.classList.add('hidden');
-        dl.classList.add('hidden');
+  for (var size = 2; size <= n; size *= 2) {
+    var half = size / 2;
+    var ang = -2 * Math.PI / size;
+    for (var i = 0; i < n; i += size) {
+      for (var k = 0; k < half; k++) {
+        var wr = Math.cos(ang * k), wi = Math.sin(ang * k);
+        var idx = i + k, idx2 = idx + half;
+        var tre = wr * re[idx2] - wi * im[idx2];
+        var tim = wr * im[idx2] + wi * re[idx2];
+        re[idx2] = re[idx] - tre; im[idx2] = im[idx] - tim;
+        re[idx] += tre; im[idx] += tim;
       }
-    }).catch(() => {});
+    }
   }
-  setInterval(poll, 500);
-  poll();
+}
+
+function processPCM(buf) {
+  var samples = new Int16Array(buf);
+  if (samples.length < N) return;
+  var re = new Float32Array(N), im = new Float32Array(N);
+  for (var i = 0; i < N; i++) re[i] = (samples[i] / 32768.0) * hann[i];
+
+  fft(re, im);
+
+  // Compute magnitude in dB for 64 bars (0 to N/2 = 256 bins → 0 to 8kHz)
+  var binsPerBar = 4; // 256 bins / 64 bars
+  var bars = new Float32Array(64);
+  for (var b = 0; b < 64; b++) {
+    var sum = 0;
+    for (var k = 0; k < binsPerBar; k++) {
+      var idx = b * binsPerBar + k;
+      var mag = Math.sqrt(re[idx] * re[idx] + im[idx] * im[idx]);
+      sum += mag;
+    }
+    var avg = sum / binsPerBar;
+    bars[b] = avg > 1e-10 ? 20 * Math.log10(avg) : -100;
+  }
+
+  // Exponential moving average
+  for (var b = 0; b < 64; b++) {
+    smoothBars[b] = smoothBars[b] * 0.6 + bars[b] * 0.4;
+  }
+
+  drawSpectrum();
+}
+
+function drawSpectrum() {
+  var W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  var dbMin = -70, dbMax = 0;
+  var barW = W / 64;
+  var labelH = 20;
+  var plotH = H - labelH;
+
+  for (var b = 0; b < 64; b++) {
+    var db = Math.max(dbMin, Math.min(dbMax, smoothBars[b]));
+    var h = ((db - dbMin) / (dbMax - dbMin)) * plotH;
+    var x = b * barW;
+    // Gradient: green → yellow → red
+    var ratio = h / plotH;
+    var r = ratio > 0.5 ? 255 : Math.round(ratio * 2 * 255);
+    var g = ratio < 0.5 ? 255 : Math.round((1 - ratio) * 2 * 255);
+    ctx.fillStyle = 'rgb(' + r + ',' + g + ',50)';
+    ctx.fillRect(x + 1, plotH - h, barW - 2, h);
+  }
+
+  // Frequency labels
+  ctx.fillStyle = '#888';
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'center';
+  var labels = [{hz:'0',bar:0},{hz:'500',bar:4},{hz:'1k',bar:8},{hz:'2k',bar:16},{hz:'4k',bar:32},{hz:'8k',bar:64}];
+  for (var i = 0; i < labels.length; i++) {
+    var lx = labels[i].bar * barW;
+    ctx.fillText(labels[i].hz, lx, H - 3);
+  }
+
+  // dB labels
+  ctx.textAlign = 'right';
+  ctx.fillText('0dB', W - 2, 12);
+  ctx.fillText('-70dB', W - 2, plotH);
+}
+
+// Initial draw
+drawSpectrum();
 </script>
 </body>
 </html>
@@ -231,10 +418,24 @@ static void handleRoot() {
 }
 
 static void handleStatus() {
-    String json = "{\"recording\":";
-    json += recording ? "true" : "false";
+    State st = currentState;
+    const char *stateStr;
+    switch (st) {
+        case STATE_IDLE:      stateStr = "idle"; break;
+        case STATE_STREAMING: stateStr = "streaming"; break;
+        case STATE_RECORDING: stateStr = "recording"; break;
+        case STATE_FILE_READY: stateStr = "file_ready"; break;
+        default:              stateStr = "idle"; break;
+    }
+
+    String json = "{\"state\":\"";
+    json += stateStr;
+    json += "\",\"recording\":";
+    json += (st == STATE_RECORDING) ? "true" : "false";
     json += ",\"file_ready\":";
-    json += fileReady ? "true" : "false";
+    json += (st == STATE_FILE_READY) ? "true" : "false";
+    json += ",\"streaming\":";
+    json += (st == STATE_STREAMING) ? "true" : "false";
     json += ",\"bytes\":";
     json += String((unsigned long)audioBytes);
     json += "}";
@@ -242,25 +443,24 @@ static void handleStatus() {
 }
 
 static void handleToggle() {
-    if (!recording && !fileReady) {
+    State st = currentState;
+    if (st == STATE_IDLE || st == STATE_STREAMING) {
         audioBytes = 0;
-        recording = true;
+        currentState = STATE_RECORDING;
         Serial.println(">> Recording started (web)");
-    } else if (recording) {
-        recording = false;
-        fileReady = true;
+    } else if (st == STATE_RECORDING) {
+        currentState = STATE_FILE_READY;
         Serial.printf(">> Recording stopped (web) — %u bytes\n", (unsigned)audioBytes);
-    } else if (fileReady) {
+    } else if (st == STATE_FILE_READY) {
         audioBytes = 0;
-        fileReady = false;
-        recording = true;
+        currentState = STATE_RECORDING;
         Serial.println(">> New recording started (web)");
     }
     server.send(200, "text/plain", "ok");
 }
 
 static void handleDownload() {
-    if (!fileReady || audioBytes == 0) {
+    if (currentState != STATE_FILE_READY || audioBytes == 0) {
         server.send(404, "text/plain", "No recording available");
         return;
     }
@@ -287,6 +487,38 @@ static void handleDownload() {
         if (toSend > chunkSize) toSend = chunkSize;
         client.write(audioBuffer + sent, toSend);
         sent += toSend;
+    }
+}
+
+// ── WebSocket event handler ──────────────────────────────────────
+static void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
+    switch (type) {
+        case WStype_DISCONNECTED:
+            Serial.printf("[WS] Client %u disconnected\n", num);
+            // Stop streaming if no clients remain
+            if (webSocket.connectedClients() == 0 && currentState == STATE_STREAMING) {
+                currentState = STATE_IDLE;
+                Serial.println(">> Streaming stopped (no clients)");
+            }
+            break;
+        case WStype_CONNECTED:
+            Serial.printf("[WS] Client %u connected\n", num);
+            break;
+        case WStype_TEXT:
+            if (length >= 5 && memcmp(payload, "start", 5) == 0) {
+                if (currentState == STATE_IDLE) {
+                    currentState = STATE_STREAMING;
+                    Serial.println(">> Streaming started");
+                }
+            } else if (length >= 4 && memcmp(payload, "stop", 4) == 0) {
+                if (currentState == STATE_STREAMING) {
+                    currentState = STATE_IDLE;
+                    Serial.println(">> Streaming stopped");
+                }
+            }
+            break;
+        default:
+            break;
     }
 }
 
@@ -329,6 +561,12 @@ void setup() {
         }
     }
 
+    // Streaming queue: 4 slots × 1024 bytes each
+    streamQueue = xQueueCreate(STREAM_QUEUE_SLOTS, STREAM_CHUNK_BYTES);
+    if (!streamQueue) {
+        Serial.println("ERROR: stream queue allocation failed!");
+    }
+
     // Button setup
     pinMode(BUTTON_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING);
@@ -351,8 +589,13 @@ void setup() {
     server.begin();
     Serial.println("Web server started on port 80");
 
-    // Recording task on core 1
-    xTaskCreatePinnedToCore(recordingTask, "rec", 4096, NULL, 1, NULL, 1);
+    // WebSocket server
+    webSocket.begin();
+    webSocket.onEvent(webSocketEvent);
+    Serial.println("WebSocket server started on port 81");
+
+    // Recording task on core 1 (increased stack for streaming chunk)
+    xTaskCreatePinnedToCore(recordingTask, "rec", 6144, NULL, 1, NULL, 1);
     Serial.println("Ready — press PRG button to start recording");
 
     // Turn LED off to indicate setup is complete
@@ -362,13 +605,26 @@ void setup() {
 // ── Loop ─────────────────────────────────────────────────────────
 void loop() {
     server.handleClient();
+    webSocket.loop();
+
+    // Dequeue PCM chunks and broadcast to WebSocket clients
+    if (currentState == STATE_STREAMING && streamQueue) {
+        uint8_t chunk[STREAM_CHUNK_BYTES];
+        while (xQueueReceive(streamQueue, chunk, 0) == pdTRUE) {
+            webSocket.broadcastBIN(chunk, STREAM_CHUNK_BYTES);
+        }
+    } else if (streamQueue) {
+        // Flush queue when not streaming
+        uint8_t discard[STREAM_CHUNK_BYTES];
+        while (xQueueReceive(streamQueue, discard, 0) == pdTRUE) {}
+    }
 
     // Blink LED while recording
     static unsigned long lastBlink = 0;
-    if (recording && millis() - lastBlink > 500) {
+    if (currentState == STATE_RECORDING && millis() - lastBlink > 500) {
         digitalWrite(LED_PIN, !digitalRead(LED_PIN));
         lastBlink = millis();
-    } else if (!recording) {
+    } else if (currentState != STATE_RECORDING) {
         digitalWrite(LED_PIN, LOW);
     }
 }
