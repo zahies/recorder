@@ -126,8 +126,8 @@
         for (let i = 0; i < dataLen; i++) checksum ^= bytes[pos + i];
         pos += dataLen;
       }
-      // Checksum byte sits after padding to 16-byte boundary
-      const pad = (16 - (pos % 16)) % 16;
+      // esptool pads so that checksum byte + padding ends on 16-byte boundary
+      const pad = 15 - (pos % 16);
       pos += pad;
       console.log('Checksum @' + pos + ': 0x' + bytes[pos].toString(16) + ' -> 0x' + (checksum & 0xFF).toString(16));
       bytes[pos] = checksum & 0xFF;
