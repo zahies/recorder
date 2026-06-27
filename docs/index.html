@@ -106,98 +106,59 @@
     const FIELD_SIZE = 32;  // must match char AP_PASS[32] in firmware
 
     let originalFirmware = null;
-    let manifestTemplate = null;
+    const firmwareUrl = new URL('firmware.bin', window.location.href).href;
 
-    // Resolve a potentially-relative URL to absolute
-    function absUrl(base, rel) {
-      return new URL(rel, base).href;
-    }
+    // Prefetch the firmware binary on page load
+    fetch(firmwareUrl)
+      .then(r => r.arrayBuffer())
+      .then(buf => { originalFirmware = buf; })
+      .catch(e => console.error('Failed to prefetch firmware:', e));
 
-    // Fetch the original manifest and firmware on page load
-    async function init() {
-      try {
-        const manifestUrl = new URL('manifest.json', window.location.href).href;
-        const resp = await fetch(manifestUrl);
-        manifestTemplate = await resp.json();
-
-        // Find the firmware entry and fetch the binary
-        for (const build of manifestTemplate.builds) {
-          for (const part of build.parts) {
-            if (part.path.endsWith('.bin') && !part.path.includes('bootloader') && !part.path.includes('partitions') && !part.path.includes('boot_app0')) {
-              const fwUrl = absUrl(manifestUrl, part.path);
-              const fwResp = await fetch(fwUrl);
-              originalFirmware = await fwResp.arrayBuffer();
-              break;
-            }
-          }
-        }
-      } catch (e) {
-        console.error('Failed to prefetch firmware:', e);
-      }
-    }
-
-    // Find the placeholder in the firmware and return its byte offset
-    function findPlaceholder(buffer) {
-      const bytes = new Uint8Array(buffer);
+    // Patch firmware: find placeholder, replace with password (null-padded to 32 bytes)
+    function patchFirmware(password) {
+      const patched = originalFirmware.slice(0);
+      const bytes = new Uint8Array(patched);
       const needle = new TextEncoder().encode(PLACEHOLDER);
+      let offset = -1;
       outer:
       for (let i = 0; i <= bytes.length - needle.length; i++) {
         for (let j = 0; j < needle.length; j++) {
           if (bytes[i + j] !== needle[j]) continue outer;
         }
-        return i;
+        offset = i;
+        break;
       }
-      return -1;
-    }
-
-    // Patch the firmware with the user's password
-    function patchFirmware(password) {
-      const patched = originalFirmware.slice(0); // copy
-      const bytes = new Uint8Array(patched);
-      const offset = findPlaceholder(patched);
-      if (offset === -1) {
-        throw new Error('Placeholder not found in firmware binary');
-      }
-      // Zero-fill the entire 32-byte field, then write the password
-      for (let i = 0; i < FIELD_SIZE; i++) {
-        bytes[offset + i] = 0;
-      }
+      if (offset === -1) throw new Error('Placeholder not found in firmware');
+      for (let i = 0; i < FIELD_SIZE; i++) bytes[offset + i] = 0;
       const passBytes = new TextEncoder().encode(password);
-      for (let i = 0; i < passBytes.length; i++) {
-        bytes[offset + i] = passBytes[i];
-      }
+      for (let i = 0; i < passBytes.length; i++) bytes[offset + i] = passBytes[i];
       return patched;
     }
 
-    // Build a patched manifest with blob URL for firmware
-    function buildManifest(patchedFirmware) {
-      const manifest = JSON.parse(JSON.stringify(manifestTemplate));
-      const manifestUrl = new URL('manifest.json', window.location.href).href;
-
-      for (const build of manifest.builds) {
-        for (const part of build.parts) {
-          if (part.path.endsWith('.bin') && !part.path.includes('bootloader') && !part.path.includes('partitions') && !part.path.includes('boot_app0')) {
-            // Replace firmware path with blob URL
-            const blob = new Blob([patchedFirmware], { type: 'application/octet-stream' });
-            part.path = URL.createObjectURL(blob);
-          } else {
-            // Convert relative paths to absolute so manifest works from blob URL
-            part.path = absUrl(manifestUrl, part.path);
-          }
+    // Override fetch so esp-web-tools gets our patched firmware.bin
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.endsWith('firmware.bin') && originalFirmware) {
+        try {
+          const passInput = document.getElementById('wifiPass');
+          const patched = patchFirmware(passInput.value);
+          return Promise.resolve(new Response(patched, {
+            headers: { 'Content-Type': 'application/octet-stream' }
+          }));
+        } catch (e) {
+          console.error('Patch failed, serving original:', e);
         }
       }
-      return manifest;
-    }
+      return _fetch.call(this, url, opts);
+    };
 
     const passInput = document.getElementById('wifiPass');
     const passError = document.getElementById('passError');
     const displayPass = document.getElementById('displayPass');
-    const installBtn = document.querySelector('esp-web-install-button');
 
     function validate() {
       const pw = passInput.value;
       displayPass.textContent = pw || '???';
-
       if (pw.length < 8) {
         passError.textContent = 'Password must be at least 8 characters (WPA2)';
         return false;
@@ -210,27 +171,7 @@
       return true;
     }
 
-    // Patch firmware and update manifest attribute so it's ready before click
-    function updateManifest() {
-      if (!validate() || !originalFirmware || !manifestTemplate) return;
-      try {
-        const patched = patchFirmware(passInput.value);
-        const manifest = buildManifest(patched);
-        const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
-        installBtn.setAttribute('manifest', URL.createObjectURL(manifestBlob));
-      } catch (err) {
-        passError.textContent = 'Patch error: ' + err.message;
-        console.error(err);
-      }
-    }
-
-    passInput.addEventListener('input', () => {
-      validate();
-      updateManifest();
-    });
-
-    // Prefetch firmware, then set initial patched manifest
-    init().then(() => updateManifest());
+    passInput.addEventListener('input', validate);
   </script>
 </body>
 </html>
