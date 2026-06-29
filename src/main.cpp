@@ -41,6 +41,7 @@ static QueueHandle_t streamQueue = NULL;
 
 // ── Button debounce ──────────────────────────────────────────────
 static volatile unsigned long lastButtonPress = 0;
+static volatile bool setupComplete = false;
 #define DEBOUNCE_MS 200
 
 // ── Web server ──────────────────────────────────────────────────
@@ -158,6 +159,7 @@ static void recordingTask(void *param) {
 
 // ── Button ISR ───────────────────────────────────────────────────
 static void IRAM_ATTR buttonISR() {
+    if (!setupComplete) return;
     unsigned long now = millis();
     if (now - lastButtonPress < DEBOUNCE_MS) return;
     lastButtonPress = now;
@@ -581,9 +583,8 @@ void setup() {
         Serial.println("ERROR: stream queue allocation failed!");
     }
 
-    // Button setup
+    // Button pin — no interrupt, recording controlled via web UI only
     pinMode(BUTTON_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING);
 
     // I2S setup
     i2sInit();
@@ -612,6 +613,9 @@ void setup() {
 
     // Turn LED off to indicate setup is complete
     digitalWrite(LED_PIN, LOW);
+
+    // Allow button presses now that setup is fully done
+    setupComplete = true;
 }
 
 // ── Loop ─────────────────────────────────────────────────────────
