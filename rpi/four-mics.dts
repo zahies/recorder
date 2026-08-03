@@ -1,0 +1,124 @@
+// four-mics-overlay.dts
+//
+// Raspberry Pi 5 - four synchronized I2S microphones
+//
+// Intended wiring:
+//
+//   GPIO18  pin 12  -> SCK/BCLK of all four microphones
+//   GPIO19  pin 35  -> WS/LRCLK of all four microphones
+//
+//   GPIO20  pin 38  <- SD from microphone 1 and microphone 2
+//                      Mic 1: L/R = LOW
+//                      Mic 2: L/R = HIGH
+//
+//   GPIO22  pin 15  <- SD from microphone 3 and microphone 4
+//                      Mic 3: L/R = LOW
+//                      Mic 4: L/R = HIGH
+//
+// The Raspberry Pi is the I2S clock producer.
+// The microphones are clock consumers.
+//
+// Expected ALSA channel order:
+//   channel 0 = GPIO20, Left
+//   channel 1 = GPIO20, Right
+//   channel 2 = GPIO22, Left
+//   channel 3 = GPIO22, Right
+//
+// Raspberry Pi 5 only.
+
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    /*
+     * Configure RP1 GPIOs for I2S0.
+     *
+     * GPIO18 = I2S0_SCLK
+     * GPIO19 = I2S0_WS
+     * GPIO20 = I2S0_SDI[0]
+     * GPIO22 = I2S0_SDI[1]
+     */
+    fragment@0 {
+        target = <&gpio>;
+
+        __overlay__ {
+            four_mics_i2s0_pins: four_mics_i2s0_pins {
+                function = "i2s0";
+                pins = "gpio18",
+                       "gpio19",
+                       "gpio20",
+                       "gpio22";
+                bias-disable;
+            };
+        };
+    };
+
+    /*
+     * Enable I2S0 in clock-producer mode and replace its default
+     * four-pin pinctrl group with our two-input-lane group.
+     */
+    fragment@1 {
+        target = <&i2s_clk_producer>;
+
+        __overlay__ {
+            pinctrl-names = "default";
+            pinctrl-0 = <&four_mics_i2s0_pins>;
+            status = "okay";
+        };
+    };
+
+    /*
+     * Dummy capture codec representing the four digital microphones.
+     *
+     * The generic dmic-codec is used here only as an ALSA SoC
+     * capture endpoint. The actual microphones communicate over I2S.
+     */
+    fragment@2 {
+        target-path = "/";
+
+        __overlay__ {
+            four_mic_codec: four-mic-codec {
+                compatible = "dmic-codec";
+                #sound-dai-cells = <0>;
+
+                /*
+                 * Limit the codec side of the DAI to four channels.
+                 */
+                num-channels = <4>;
+
+                status = "okay";
+            };
+        };
+    };
+
+    /*
+     * Create the ALSA sound card.
+     */
+    fragment@3 {
+        target = <&sound>;
+
+        __overlay__ {
+            compatible = "simple-audio-card";
+            status = "okay";
+
+            simple-audio-card,name = "four-mics";
+            simple-audio-card,format = "i2s";
+
+            /*
+             * Raspberry Pi generates both BCLK and WS/LRCLK.
+             */
+            simple-audio-card,bitclock-master = <&four_mics_cpu>;
+            simple-audio-card,frame-master = <&four_mics_cpu>;
+
+            four_mics_cpu: simple-audio-card,cpu {
+                sound-dai = <&i2s_clk_producer>;
+            };
+
+            four_mics_codec: simple-audio-card,codec {
+                sound-dai = <&four_mic_codec>;
+            };
+        };
+    };
+};

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ESP32 Sound Recorder — Install</title>
+  <title>Sound Recorder — Setup</title>
   <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
   <style>
     body {
@@ -15,13 +15,47 @@
       margin: 0;
     }
     h1 { color: #e94560; margin-bottom: 0.2em; }
-    .subtitle { color: #aaa; margin-bottom: 2em; }
-    .card {
+    .subtitle { color: #aaa; margin-bottom: 1.5em; }
+    .tabs {
+      display: flex;
+      justify-content: center;
+      gap: 0;
+      margin-bottom: 0;
+      max-width: 500px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .tab {
+      flex: 1;
+      padding: 0.8em 1.5em;
+      background: #0f3460;
+      color: #aaa;
+      border: none;
+      cursor: pointer;
+      font-size: 1em;
+      font-weight: 600;
+      transition: background 0.2s, color 0.2s;
+    }
+    .tab:first-child { border-radius: 12px 0 0 0; }
+    .tab:last-child { border-radius: 0 12px 0 0; }
+    .tab.active {
+      background: #16213e;
+      color: #eee;
+    }
+    .tab-content {
+      display: none;
       max-width: 500px;
       margin: 0 auto 2em;
+    }
+    .tab-content.active { display: block; }
+    .card {
       background: #16213e;
-      border-radius: 12px;
+      border-radius: 0 0 12px 12px;
       padding: 2em;
+      margin-bottom: 1.5em;
+    }
+    .card + .card {
+      border-radius: 12px;
     }
     esp-web-install-button {
       display: block;
@@ -62,46 +96,135 @@
       margin-top: 0.5em;
       min-height: 1.2em;
     }
+    pre.cmd {
+      background: #0a0a1a;
+      color: #16c79a;
+      text-align: left;
+      padding: 1em;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.9em;
+      line-height: 1.6;
+    }
+    .badge {
+      display: inline-block;
+      font-size: 0.7em;
+      padding: 0.2em 0.6em;
+      border-radius: 6px;
+      vertical-align: middle;
+      margin-left: 0.4em;
+    }
+    .badge-esp { background: #e94560; color: #fff; }
+    .badge-rpi { background: #16c79a; color: #1a1a2e; }
   </style>
 </head>
 <body>
-  <h1>ESP32 Sound Recorder</h1>
-  <p class="subtitle">ICS43434 I2S Microphone — WiFi Stream to Phone</p>
+  <h1>Sound Recorder</h1>
+  <p class="subtitle">ICS-43434 I2S Microphone Array</p>
 
-  <div class="card">
-    <h2>Install Firmware</h2>
-    <p>Connect your Heltec WiFi LoRa 32 via USB-C, then click install.</p>
-
-    <label for="wifiPass">WiFi Password</label>
-    <input type="text" id="wifiPass" value="za12xs43" minlength="8" maxlength="31">
-    <div id="passError"></div>
-
-    <esp-web-install-button manifest="manifest.json">
-      <button slot="activate">Install Recorder</button>
-      <span slot="unsupported">
-        Your browser doesn't support Web Serial.<br>
-        Use <b>Chrome</b> or <b>Edge</b> on desktop.
-      </span>
-      <span slot="not-allowed">
-        Web Serial is not allowed in this context.
-      </span>
-    </esp-web-install-button>
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('esp')">ESP32 <span class="badge badge-esp">1 ch</span></button>
+    <button class="tab" onclick="switchTab('rpi')">RPi 5 <span class="badge badge-rpi">4 ch</span></button>
   </div>
 
-  <div class="card">
-    <h2>How to Use</h2>
-    <ol class="steps">
-      <li>After flashing, connect your phone to WiFi: <b>ESP32-Recorder</b> (password: <b id="displayPass">za12xs43</b>)</li>
-      <li>Open <b>http://192.168.4.1</b> in your phone's browser</li>
-      <li>Tap <b>Record</b> to start recording</li>
-      <li>Tap <b>Stop</b> to stop</li>
-      <li>Tap <b>Download WAV</b> to save the file</li>
-    </ol>
+  <!-- ── ESP32 Tab ──────────────────────────────────────────────── -->
+  <div id="tab-esp" class="tab-content active">
+    <div class="card">
+      <h2>Install Firmware</h2>
+      <p>Connect your Heltec WiFi LoRa 32 via USB-C, then click install.</p>
+
+      <label for="wifiPass">WiFi Password</label>
+      <input type="text" id="wifiPass" value="za12xs43" minlength="8" maxlength="31">
+      <div id="passError"></div>
+
+      <esp-web-install-button manifest="manifest.json">
+        <button slot="activate">Install Recorder</button>
+        <span slot="unsupported">
+          Your browser doesn't support Web Serial.<br>
+          Use <b>Chrome</b> or <b>Edge</b> on desktop.
+        </span>
+        <span slot="not-allowed">
+          Web Serial is not allowed in this context.
+        </span>
+      </esp-web-install-button>
+    </div>
+
+    <div class="card">
+      <h2>How to Use</h2>
+      <ol class="steps">
+        <li>After flashing, connect your phone to WiFi: <b>ESP32-Recorder</b> (password: <b id="displayPass">za12xs43</b>)</li>
+        <li>Open <b>http://192.168.4.1</b> in your phone's browser</li>
+        <li>Tap <b>Record</b> to start recording</li>
+        <li>Tap <b>Stop</b> to stop</li>
+        <li>Tap <b>Download WAV</b> to save the file</li>
+      </ol>
+    </div>
+
+    <p class="note">Requires Chrome or Edge. Works on ESP32-S3 (Heltec WiFi LoRa 32 V3/V4).</p>
   </div>
 
-  <p class="note">Requires Chrome or Edge. Works on ESP32-S3 (Heltec WiFi LoRa 32 V3/V4).</p>
+  <!-- ── RPi 5 Tab ──────────────────────────────────────────────── -->
+  <div id="tab-rpi" class="tab-content">
+    <div class="card">
+      <h2>Hardware Setup</h2>
+      <p>4x ICS-43434 microphones in a tetrahedral configuration.</p>
+      <ol class="steps">
+        <li><b>GPIO18</b> (pin 12) &rarr; SCK / BCLK of all four mics</li>
+        <li><b>GPIO19</b> (pin 35) &rarr; WS / LRCLK of all four mics</li>
+        <li><b>GPIO20</b> (pin 38) &larr; SD from Mic 1 (L/R=LOW) &amp; Mic 2 (L/R=HIGH)</li>
+        <li><b>GPIO22</b> (pin 15) &larr; SD from Mic 3 (L/R=LOW) &amp; Mic 4 (L/R=HIGH)</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h2>Install Overlay &amp; Software</h2>
+      <pre class="cmd"># Compile and install the device tree overlay
+sudo dtc -@ -I dts -O dtb \
+  -o /boot/overlays/four-mics.dtbo \
+  rpi/four-mics.dts
+
+# Add to /boot/config.txt
+echo "dtoverlay=four-mics" | sudo tee -a /boot/firmware/config.txt
+
+# Reboot to activate
+sudo reboot
+
+# After reboot, verify the sound card
+arecord -l   # should show "four-mics"
+
+# Install Python dependencies
+pip install -r rpi/requirements.txt</pre>
+    </div>
+
+    <div class="card">
+      <h2>How to Use</h2>
+      <ol class="steps">
+        <li>Start the recorder: <code>sudo python3 rpi/recorder.py --port 80</code></li>
+        <li>Open <b>http://&lt;rpi-ip&gt;</b> in your browser</li>
+        <li>Click <b>Record</b> to capture 4-channel audio</li>
+        <li>Click <b>Stop</b> to finish</li>
+        <li>Click <b>Download WAV</b> to save the 4-ch file</li>
+        <li>Use <b>Live Spectrum</b> to view real-time FFT (channel 0)</li>
+      </ol>
+    </div>
+
+    <p class="note">Raspberry Pi 5 only. Records 4-channel 16 kHz 16-bit WAV to disk.</p>
+  </div>
 
   <script>
+    // ── Tab switching ──
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-content').forEach(function(el) {
+        el.classList.remove('active');
+      });
+      document.querySelectorAll('.tab').forEach(function(el) {
+        el.classList.remove('active');
+      });
+      document.getElementById('tab-' + tab).classList.add('active');
+      event.currentTarget.classList.add('active');
+    }
+
+    // ── ESP32 firmware patching ──
     const PLACEHOLDER = '%%WIFI_PASS_PLACEHOLDER%%';
     const FIELD_SIZE = 32;
 
