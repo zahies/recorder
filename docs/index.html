@@ -39,6 +39,26 @@
     esp-web-install-button button:hover { background: #c73550; }
     .steps { text-align: left; line-height: 1.8; }
     .steps li { margin-bottom: 0.5em; }
+    .parts { text-align: left; line-height: 1.8; }
+    .parts li { margin-bottom: 0.3em; }
+    .wiring-table {
+      width: 100%; border-collapse: collapse; margin: 1em 0;
+      font-size: 0.95em; text-align: left;
+    }
+    .wiring-table th {
+      background: #0f3460; padding: 0.5em 0.8em;
+      border-bottom: 2px solid #e94560;
+    }
+    .wiring-table td {
+      padding: 0.4em 0.8em; border-bottom: 1px solid #2a2a4a;
+    }
+    .wiring-table tr:last-child td { border-bottom: none; }
+    .diagram {
+      background: #0f0f23; border-radius: 8px; padding: 1em;
+      font-family: monospace; font-size: 0.85em; text-align: left;
+      line-height: 1.6; overflow-x: auto; white-space: pre;
+      margin: 1em 0;
+    }
     .note { color: #888; font-size: 0.9em; margin-top: 2em; }
     label[for="wifiPass"] {
       font-size: 1.1em;
@@ -69,6 +89,58 @@
   <p class="subtitle">4× ICS43434 I2S Microphones — WiFi Stream to Phone</p>
 
   <div class="card">
+    <h2>Parts</h2>
+    <ul class="parts">
+      <li><b>1x</b> Heltec WiFi LoRa 32 V3 (ESP32-S3)</li>
+      <li><b>4x</b> ICS-43434 I2S MEMS microphone breakout</li>
+      <li>Hookup wire, breadboard or perfboard</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>Wiring</h2>
+    <p>All 4 mics share the same clock lines. Two mics per data line, separated by the SEL pin.</p>
+    <table class="wiring-table">
+      <tr><th>Heltec Pin</th><th>GPIO</th><th>Connects To</th></tr>
+      <tr><td>3.3V</td><td>-</td><td>VDD on all 4 mics</td></tr>
+      <tr><td>GND</td><td>-</td><td>GND on all 4 mics</td></tr>
+      <tr><td>4</td><td>GPIO 4</td><td>SCK (BCLK) on all 4 mics</td></tr>
+      <tr><td>5</td><td>GPIO 5</td><td>WS (LRCLK) on all 4 mics</td></tr>
+      <tr><td>6</td><td>GPIO 6</td><td>SD (DOUT) on Mic 1 + Mic 2</td></tr>
+      <tr><td>7</td><td>GPIO 7</td><td>SD (DOUT) on Mic 3 + Mic 4</td></tr>
+    </table>
+
+    <p><b>SEL pin</b> on each mic selects Left or Right channel:</p>
+    <table class="wiring-table">
+      <tr><th>Mic</th><th>Data Line</th><th>SEL</th><th>Channel</th></tr>
+      <tr><td>Mic 1</td><td>GPIO 6</td><td>GND (LOW)</td><td>Left</td></tr>
+      <tr><td>Mic 2</td><td>GPIO 6</td><td>3.3V (HIGH)</td><td>Right</td></tr>
+      <tr><td>Mic 3</td><td>GPIO 7</td><td>GND (LOW)</td><td>Left</td></tr>
+      <tr><td>Mic 4</td><td>GPIO 7</td><td>3.3V (HIGH)</td><td>Right</td></tr>
+    </table>
+
+    <div class="diagram">Heltec V3              Mic 1 (SEL=GND)    Mic 2 (SEL=3V3)
+ ┌──────────┐          ┌───────────┐       ┌───────────┐
+ │      3V3 ├──────┬───┤ VDD       │   ┌───┤ VDD       │
+ │      GND ├──┬─┬─│───┤ GND   SEL ├─┐ │ ┌─┤ GND   SEL ├─── 3V3
+ │   GPIO 4 ├──│─│─│─┬─┤ SCK       │ │ │ │ ├ SCK       │
+ │   GPIO 5 ├──│─│─│─│─┤─WS        │ │ │ │ ├ WS        │
+ │   GPIO 6 ├──│─│─│─│─┤─SD────────│─│─│─│─┤ SD        │
+ │   GPIO 7 ├──│─│─│ │ └───────────┘ │ │ │ └───────────┘
+ └──────────┘  │ │ │ │               GND│ │
+               │ │ │ │                  │ │
+               │ │ │ │  Mic 3 (SEL=GND)│ │ Mic 4 (SEL=3V3)
+               │ │ │ │ ┌───────────┐   │ │ ┌───────────┐
+               │ │ └─│─┤ VDD       │   └─│─┤ VDD       │
+               │ └───│─┤ GND   SEL ├─┐   └─┤ GND   SEL ├─── 3V3
+               │     ├─┤ SCK       │ │     ├ SCK       │
+               │     └─┤ WS        │ │     └ WS        │
+               └───────┤ SD────────│─│──────┤ SD        │
+                       └───────────┘ │      └───────────┘
+                                     GND</div>
+  </div>
+
+  <div class="card">
     <h2>Install Firmware</h2>
     <p>Connect your Heltec WiFi LoRa 32 via USB-C, then click install.</p>
 
@@ -95,7 +167,7 @@
       <li>Open <b>http://192.168.4.1</b> in your phone's browser</li>
       <li>Tap <b>Record</b> to start recording</li>
       <li>Tap <b>Stop</b> to stop</li>
-      <li>Tap <b>Download WAV</b> to save the file</li>
+      <li>Tap <b>Download WAV</b> to save the 4-channel 16 kHz WAV file</li>
     </ol>
   </div>
 
