@@ -4,15 +4,18 @@
 #include <WebServer.h>
 
 // ── Pin definitions ──────────────────────────────────────────────
-#define I2S_BCK_PIN   4   // SCK / BCLK
-#define I2S_WS_PIN    5   // LRCLK
-#define I2S_DATA_PIN  6   // SD  / Data Out
-#define BUTTON_PIN    0   // PRG button on Heltec V3
-#define LED_PIN       35  // White LED on Heltec V3
+#define I2S_BCK_PIN    4   // SCK / BCLK (shared by both I2S peripherals)
+#define I2S_WS_PIN     5   // LRCLK      (shared by both I2S peripherals)
+#define I2S_DATA1_PIN  6   // SD1 — Mic1 (L) + Mic2 (R)
+#define I2S_DATA2_PIN  7   // SD2 — Mic3 (L) + Mic4 (R)
+#define BUTTON_PIN     0   // PRG button on Heltec V3
+#define LED_PIN        35  // White LED on Heltec V3
 
 // ── Audio settings ───────────────────────────────────────────────
 #define SAMPLE_RATE     16000
 #define I2S_PORT        I2S_NUM_0
+#define I2S_PORT2       I2S_NUM_1
+#define NUM_CHANNELS    4
 #define DMA_BUF_COUNT   8
 #define DMA_BUF_LEN     256
 
@@ -21,8 +24,8 @@ static const char *AP_SSID = "ESP32-Recorder";
 static const char AP_PASS[] __attribute__((aligned(4))) = "%%WIFI_PASS_PLACEHOLDER%%\0\0\0\0\0\0";
 
 // ── Audio buffer ────────────────────────────────────────────────
-// 16 kHz × 2 bytes × 1 ch = 32 KB/s
-// PSRAM: up to ~1.8 MB on 2 MB chip.  Internal RAM fallback: ~5 s.
+// 16 kHz × 2 bytes × 4 ch = 128 KB/s
+// PSRAM: 1.8 MB ≈ 14 seconds of 4-channel audio
 #define PSRAM_AUDIO_BYTES (1800 * 1024)
 #define FALLBACK_AUDIO_BYTES (160 * 1024)
 static uint8_t *audioBuffer = nullptr;
@@ -50,7 +53,7 @@ WebServer server(80);
 // ── WAV header helper ────────────────────────────────────────────
 static void writeWavHeader(uint8_t *buf, uint32_t dataSize) {
     uint32_t fileSize = 36 + dataSize;
-    uint16_t numChannels = 1;
+    uint16_t numChannels = NUM_CHANNELS;
     uint32_t sampleRate = SAMPLE_RATE;
     uint16_t bitsPerSample = 16;
     uint32_t byteRate = sampleRate * numChannels * bitsPerSample / 8;
@@ -77,11 +80,12 @@ static void writeWavHeader(uint8_t *buf, uint32_t dataSize) {
 
 // ── I2S setup ────────────────────────────────────────────────────
 static void i2sInit() {
+    // I2S_NUM_0 — master, stereo, reads SD1 (Mic1 L + Mic2 R)
     i2s_config_t i2s_config = {};
     i2s_config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX);
     i2s_config.sample_rate = SAMPLE_RATE;
     i2s_config.bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT;
-    i2s_config.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
+    i2s_config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
     i2s_config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
     i2s_config.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
     i2s_config.dma_buf_count = DMA_BUF_COUNT;
@@ -91,24 +95,51 @@ static void i2sInit() {
 
     i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
 
-    i2s_pin_config_t pin_config = {};
-    pin_config.bck_io_num = I2S_BCK_PIN;
-    pin_config.ws_io_num = I2S_WS_PIN;
-    pin_config.data_in_num = I2S_DATA_PIN;
-    pin_config.data_out_num = I2S_PIN_NO_CHANGE;
+    i2s_pin_config_t pin_config0 = {};
+    pin_config0.bck_io_num = I2S_BCK_PIN;
+    pin_config0.ws_io_num = I2S_WS_PIN;
+    pin_config0.data_in_num = I2S_DATA1_PIN;
+    pin_config0.data_out_num = I2S_PIN_NO_CHANGE;
 
-    i2s_set_pin(I2S_PORT, &pin_config);
+    i2s_set_pin(I2S_PORT, &pin_config0);
     i2s_zero_dma_buffer(I2S_PORT);
+
+    // I2S_NUM_1 — slave, stereo, reads SD2 (Mic3 L + Mic4 R)
+    // Shares BCLK + WS from I2S_NUM_0 master
+    i2s_config_t i2s_config1 = {};
+    i2s_config1.mode = (i2s_mode_t)(I2S_MODE_SLAVE | I2S_MODE_RX);
+    i2s_config1.sample_rate = SAMPLE_RATE;
+    i2s_config1.bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT;
+    i2s_config1.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
+    i2s_config1.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+    i2s_config1.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
+    i2s_config1.dma_buf_count = DMA_BUF_COUNT;
+    i2s_config1.dma_buf_len = DMA_BUF_LEN;
+    i2s_config1.use_apll = false;
+    i2s_config1.fixed_mclk = 0;
+
+    i2s_driver_install(I2S_PORT2, &i2s_config1, 0, NULL);
+
+    i2s_pin_config_t pin_config1 = {};
+    pin_config1.bck_io_num = I2S_BCK_PIN;
+    pin_config1.ws_io_num = I2S_WS_PIN;
+    pin_config1.data_in_num = I2S_DATA2_PIN;
+    pin_config1.data_out_num = I2S_PIN_NO_CHANGE;
+
+    i2s_set_pin(I2S_PORT2, &pin_config1);
+    i2s_zero_dma_buffer(I2S_PORT2);
 }
 
 // ── Recording task (runs on core 1) ─────────────────────────────
 static void recordingTask(void *param) {
-    const size_t readBufSamples = 256;
-    int32_t readBuf[readBufSamples];
-    size_t bytesRead;
+    // Each I2S port reads stereo 32-bit: L/R pairs
+    const size_t readBufSamples = 256;           // 128 stereo frames
+    int32_t buf0[readBufSamples];                // I2S_NUM_0: Mic1(L) + Mic2(R)
+    int32_t buf1[readBufSamples];                // I2S_NUM_1: Mic3(L) + Mic4(R)
+    size_t bytesRead0, bytesRead1;
     uint32_t debugCounter = 0;
 
-    // Streaming chunk accumulator
+    // Streaming chunk accumulator (mono — mic1 only for spectrum)
     int16_t streamChunk[STREAM_CHUNK_SAMPLES];
     size_t streamChunkPos = 0;
 
@@ -116,32 +147,48 @@ static void recordingTask(void *param) {
         State st = currentState;
 
         if (st == STATE_RECORDING) {
-            esp_err_t err = i2s_read(I2S_PORT, readBuf, sizeof(readBuf), &bytesRead, portMAX_DELAY);
-            if (err == ESP_OK && bytesRead > 0) {
-                size_t samplesRead = bytesRead / sizeof(int32_t);
+            esp_err_t err0 = i2s_read(I2S_PORT,  buf0, sizeof(buf0), &bytesRead0, portMAX_DELAY);
+            esp_err_t err1 = i2s_read(I2S_PORT2, buf1, sizeof(buf1), &bytesRead1, portMAX_DELAY);
+
+            if (err0 == ESP_OK && err1 == ESP_OK && bytesRead0 > 0 && bytesRead1 > 0) {
+                // Use the smaller of the two reads to stay in sync
+                size_t frames0 = bytesRead0 / (sizeof(int32_t) * 2);  // stereo frames
+                size_t frames1 = bytesRead1 / (sizeof(int32_t) * 2);
+                size_t frames  = (frames0 < frames1) ? frames0 : frames1;
 
                 debugCounter++;
                 if (debugCounter % 32 == 1) {
-                    Serial.printf("I2S: %u samples, raw[0]=0x%08X raw[1]=0x%08X raw[2]=0x%08X raw[3]=0x%08X\n",
-                                  samplesRead, readBuf[0], readBuf[1], readBuf[2], readBuf[3]);
+                    Serial.printf("I2S: %u frames, buf0[0..3]=0x%08X 0x%08X 0x%08X 0x%08X  buf1[0..3]=0x%08X 0x%08X 0x%08X 0x%08X\n",
+                                  frames, buf0[0], buf0[1], buf0[2], buf0[3],
+                                  buf1[0], buf1[1], buf1[2], buf1[3]);
                 }
 
-                for (size_t i = 0; i < samplesRead; i++) {
-                    if (audioBytes + 2 > maxAudioBytes) {
+                for (size_t i = 0; i < frames; i++) {
+                    // 4 channels × 2 bytes = 8 bytes per frame
+                    if (audioBytes + 8 > maxAudioBytes) {
                         currentState = STATE_FILE_READY;
                         break;
                     }
-                    int16_t sample = (int16_t)(readBuf[i] >> 14);
-                    memcpy(audioBuffer + audioBytes, &sample, 2);
-                    audioBytes += 2;
+                    int16_t mic1 = (int16_t)(buf0[2 * i]     >> 14);  // SD1 Left
+                    int16_t mic2 = (int16_t)(buf0[2 * i + 1] >> 14);  // SD1 Right
+                    int16_t mic3 = (int16_t)(buf1[2 * i]     >> 14);  // SD2 Left
+                    int16_t mic4 = (int16_t)(buf1[2 * i + 1] >> 14);  // SD2 Right
+
+                    memcpy(audioBuffer + audioBytes,     &mic1, 2);
+                    memcpy(audioBuffer + audioBytes + 2, &mic2, 2);
+                    memcpy(audioBuffer + audioBytes + 4, &mic3, 2);
+                    memcpy(audioBuffer + audioBytes + 6, &mic4, 2);
+                    audioBytes += 8;
                 }
             }
         } else if (st == STATE_STREAMING) {
-            esp_err_t err = i2s_read(I2S_PORT, readBuf, sizeof(readBuf), &bytesRead, portMAX_DELAY);
-            if (err == ESP_OK && bytesRead > 0) {
-                size_t samplesRead = bytesRead / sizeof(int32_t);
-                for (size_t i = 0; i < samplesRead; i++) {
-                    int16_t sample = (int16_t)(readBuf[i] >> 14);
+            // Spectrum uses mic1 only (I2S_NUM_0 left channel)
+            esp_err_t err = i2s_read(I2S_PORT, buf0, sizeof(buf0), &bytesRead0, portMAX_DELAY);
+            if (err == ESP_OK && bytesRead0 > 0) {
+                size_t stereoFrames = bytesRead0 / (sizeof(int32_t) * 2);
+                for (size_t i = 0; i < stereoFrames; i++) {
+                    // Extract left channel only (mic1) from stereo pairs
+                    int16_t sample = (int16_t)(buf0[2 * i] >> 14);
                     streamChunk[streamChunkPos++] = sample;
                     if (streamChunkPos >= STREAM_CHUNK_SAMPLES) {
                         xQueueSend(streamQueue, streamChunk, 0);
@@ -183,7 +230,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ESP32 Recorder</title>
+<title>ESP32 4-Channel Recorder</title>
 <style>
   body { font-family: sans-serif; text-align: center; padding: 2em;
          background: #1a1a2e; color: #eee; }
@@ -209,7 +256,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 </style>
 </head>
 <body>
-<h1>ESP32 Sound Recorder</h1>
+<h1>ESP32 4-Channel Recorder</h1>
 <div id="status" class="waiting">Waiting</div>
 <div id="controls">
   <button id="recBtn" class="btn btn-rec" onclick="doToggle()">Record</button>
@@ -244,7 +291,8 @@ function poll() {
       specB.classList.add('hidden');
       specS.classList.add('hidden');
     } else if (state === 'file_ready') {
-      st.textContent = 'Done \u2014 ' + (d.bytes / 1024).toFixed(0) + ' KB recorded';
+      var secs = (d.bytes / 128000).toFixed(1);
+      st.textContent = 'Done \u2014 ' + (d.bytes / 1024).toFixed(0) + ' KB (' + secs + ' s) recorded';
       st.className = 'ready';
       rec.classList.remove('hidden');
       rec.textContent = 'New Recording';
@@ -549,7 +597,7 @@ void setup() {
     // Long delay so USB-Serial/JTAG has time to reconnect on host
     delay(3000);
 
-    Serial.println("\n=== ESP32 Sound Recorder ===");
+    Serial.println("\n=== ESP32 4-Channel Recorder ===");
     Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
     Serial.printf("PSRAM size: %u bytes\n", ESP.getPsramSize());
 
@@ -560,14 +608,14 @@ void setup() {
             maxAudioBytes = ESP.getFreePsram() - 4096;
         }
         audioBuffer = (uint8_t *)ps_malloc(maxAudioBytes);
-        Serial.printf("PSRAM buffer: %u bytes (~%u s)\n",
-                       maxAudioBytes, maxAudioBytes / 32000);
+        Serial.printf("PSRAM buffer: %u bytes (~%u s @ 4ch)\n",
+                       maxAudioBytes, maxAudioBytes / 128000);
     }
     if (!audioBuffer) {
         maxAudioBytes = FALLBACK_AUDIO_BYTES;
         audioBuffer = (uint8_t *)malloc(maxAudioBytes);
-        Serial.printf("Internal RAM buffer: %u bytes (~%u s)\n",
-                       maxAudioBytes, maxAudioBytes / 32000);
+        Serial.printf("Internal RAM buffer: %u bytes (~%u s @ 4ch)\n",
+                       maxAudioBytes, maxAudioBytes / 128000);
     }
     if (!audioBuffer) {
         Serial.println("ERROR: buffer allocation failed!");
@@ -588,7 +636,7 @@ void setup() {
 
     // I2S setup
     i2sInit();
-    Serial.println("I2S initialized");
+    Serial.println("I2S initialized (2 ports, 4 channels)");
 
     // WiFi AP
     WiFi.mode(WIFI_AP);
@@ -608,7 +656,7 @@ void setup() {
     Serial.println("Web server started on port 80");
 
     // Recording task on core 1 (increased stack for streaming chunk)
-    xTaskCreatePinnedToCore(recordingTask, "rec", 6144, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(recordingTask, "rec", 8192, NULL, 1, NULL, 1);
     Serial.println("Ready — press PRG button to start recording");
 
     // Turn LED off to indicate setup is complete
