@@ -143,12 +143,27 @@ static void recordingTask(void *param) {
     int16_t streamChunk[STREAM_CHUNK_SAMPLES];
     size_t streamChunkPos = 0;
 
+    State prevState = STATE_IDLE;
+
     for (;;) {
         State st = currentState;
 
         if (st == STATE_RECORDING) {
-            esp_err_t err0 = i2s_read(I2S_PORT,  buf0, sizeof(buf0), &bytesRead0, portMAX_DELAY);
-            esp_err_t err1 = i2s_read(I2S_PORT2, buf1, sizeof(buf1), &bytesRead1, portMAX_DELAY);
+            // Reset I2S DMA on transition into recording so stale/overflowed
+            // buffers don't block reads (especially the slave port).
+            if (prevState != STATE_RECORDING) {
+                i2s_stop(I2S_PORT);
+                i2s_stop(I2S_PORT2);
+                i2s_zero_dma_buffer(I2S_PORT);
+                i2s_zero_dma_buffer(I2S_PORT2);
+                i2s_start(I2S_PORT);
+                i2s_start(I2S_PORT2);
+                Serial.println("I2S: DMA reset for recording");
+            }
+            prevState = st;
+
+            esp_err_t err0 = i2s_read(I2S_PORT,  buf0, sizeof(buf0), &bytesRead0, pdMS_TO_TICKS(500));
+            esp_err_t err1 = i2s_read(I2S_PORT2, buf1, sizeof(buf1), &bytesRead1, pdMS_TO_TICKS(500));
 
             if (err0 == ESP_OK && err1 == ESP_OK && bytesRead0 > 0 && bytesRead1 > 0) {
                 // Use the smaller of the two reads to stay in sync
@@ -182,8 +197,15 @@ static void recordingTask(void *param) {
                 }
             }
         } else if (st == STATE_STREAMING) {
+            if (prevState != STATE_STREAMING) {
+                i2s_stop(I2S_PORT);
+                i2s_zero_dma_buffer(I2S_PORT);
+                i2s_start(I2S_PORT);
+            }
+            prevState = st;
+
             // Spectrum uses mic1 only (I2S_NUM_0 left channel)
-            esp_err_t err = i2s_read(I2S_PORT, buf0, sizeof(buf0), &bytesRead0, portMAX_DELAY);
+            esp_err_t err = i2s_read(I2S_PORT, buf0, sizeof(buf0), &bytesRead0, pdMS_TO_TICKS(500));
             if (err == ESP_OK && bytesRead0 > 0) {
                 size_t stereoFrames = bytesRead0 / (sizeof(int32_t) * 2);
                 for (size_t i = 0; i < stereoFrames; i++) {
@@ -197,6 +219,7 @@ static void recordingTask(void *param) {
                 }
             }
         } else {
+            prevState = st;
             streamChunkPos = 0;
             debugCounter = 0;
             vTaskDelay(pdMS_TO_TICKS(50));
