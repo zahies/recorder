@@ -27,3 +27,5 @@ jobs:
           path: docs
       - id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          timeout: 600000
