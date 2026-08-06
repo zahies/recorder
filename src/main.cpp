@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <driver/i2s.h>
+#include <driver/gpio.h>
 #include <WiFi.h>
 #include <WebServer.h>
 
@@ -128,6 +129,12 @@ static void i2sInit() {
 
     i2s_set_pin(I2S_PORT2, &pin_config1);
     i2s_zero_dma_buffer(I2S_PORT2);
+
+    // i2s_set_pin for the slave sets BCLK/WS to GPIO_MODE_INPUT, which
+    // disconnects the master's clock output on those shared pins.
+    // Restore to INPUT_OUTPUT so the master can drive and slave can read.
+    gpio_set_direction((gpio_num_t)I2S_BCK_PIN, GPIO_MODE_INPUT_OUTPUT);
+    gpio_set_direction((gpio_num_t)I2S_WS_PIN, GPIO_MODE_INPUT_OUTPUT);
 }
 
 // ── Recording task (runs on core 1) ─────────────────────────────
