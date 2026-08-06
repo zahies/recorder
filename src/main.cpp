@@ -165,6 +165,12 @@ static void recordingTask(void *param) {
             esp_err_t err0 = i2s_read(I2S_PORT,  buf0, sizeof(buf0), &bytesRead0, pdMS_TO_TICKS(500));
             esp_err_t err1 = i2s_read(I2S_PORT2, buf1, sizeof(buf1), &bytesRead1, pdMS_TO_TICKS(500));
 
+            debugCounter++;
+            if (debugCounter <= 5 || debugCounter % 100 == 0) {
+                Serial.printf("I2S read: err0=%d bytes0=%u, err1=%d bytes1=%u\n",
+                              err0, (unsigned)bytesRead0, err1, (unsigned)bytesRead1);
+            }
+
             if (err0 == ESP_OK && err1 == ESP_OK && bytesRead0 > 0 && bytesRead1 > 0) {
                 // Use the smaller of the two reads to stay in sync
                 size_t frames0 = bytesRead0 / (sizeof(int32_t) * 2);  // stereo frames
