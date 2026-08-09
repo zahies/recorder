@@ -106,17 +106,17 @@
       <tr><td>GND</td><td>-</td><td>GND on all 4 mics</td></tr>
       <tr><td>4</td><td>GPIO 4</td><td>SCK (BCLK) on all 4 mics</td></tr>
       <tr><td>5</td><td>GPIO 5</td><td>WS (LRCLK) on all 4 mics</td></tr>
-      <tr><td>6</td><td>GPIO 6</td><td>SD (DOUT) on Mic 1 + Mic 2</td></tr>
-      <tr><td>7</td><td>GPIO 7</td><td>SD (DOUT) on Mic 3 + Mic 4</td></tr>
+      <tr><td>41</td><td>GPIO 41</td><td>SD (DOUT) on Mic 1 + Mic 2</td></tr>
+      <tr><td>42</td><td>GPIO 42</td><td>SD (DOUT) on Mic 3 + Mic 4</td></tr>
     </table>
 
     <p><b>SEL pin</b> on each mic selects Left or Right channel:</p>
     <table class="wiring-table">
       <tr><th>Mic</th><th>Data Line</th><th>SEL</th><th>Channel</th></tr>
-      <tr><td>Mic 1</td><td>GPIO 6</td><td>GND (LOW)</td><td>Left</td></tr>
-      <tr><td>Mic 2</td><td>GPIO 6</td><td>3.3V (HIGH)</td><td>Right</td></tr>
-      <tr><td>Mic 3</td><td>GPIO 7</td><td>GND (LOW)</td><td>Left</td></tr>
-      <tr><td>Mic 4</td><td>GPIO 7</td><td>3.3V (HIGH)</td><td>Right</td></tr>
+      <tr><td>Mic 1</td><td>GPIO 41</td><td>GND (LOW)</td><td>Left</td></tr>
+      <tr><td>Mic 2</td><td>GPIO 41</td><td>3.3V (HIGH)</td><td>Right</td></tr>
+      <tr><td>Mic 3</td><td>GPIO 42</td><td>GND (LOW)</td><td>Left</td></tr>
+      <tr><td>Mic 4</td><td>GPIO 42</td><td>3.3V (HIGH)</td><td>Right</td></tr>
     </table>
 
     <div class="diagram">Heltec V3              Mic 1 (SEL=GND)    Mic 2 (SEL=3V3)
@@ -125,8 +125,8 @@
  │      GND ├──┬─┬─│───┤ GND   SEL ├─┐ │ ┌─┤ GND   SEL ├─── 3V3
  │   GPIO 4 ├──│─│─│─┬─┤ SCK       │ │ │ │ ├ SCK       │
  │   GPIO 5 ├──│─│─│─│─┤─WS        │ │ │ │ ├ WS        │
- │   GPIO 6 ├──│─│─│─│─┤─SD────────│─│─│─│─┤ SD        │
- │   GPIO 7 ├──│─│─│ │ └───────────┘ │ │ │ └───────────┘
+ │  GPIO 41 ├──│─│─│─│─┤─SD────────│─│─│─│─┤ SD        │
+ │  GPIO 42 ├──│─│─│ │ └───────────┘ │ │ │ └───────────┘
  └──────────┘  │ │ │ │               GND│ │
                │ │ │ │                  │ │
                │ │ │ │  Mic 3 (SEL=GND)│ │ Mic 4 (SEL=3V3)

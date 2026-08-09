@@ -7,8 +7,8 @@
 // ── Pin definitions ──────────────────────────────────────────────
 #define I2S_BCK_PIN    4   // SCK / BCLK (shared by both I2S peripherals)
 #define I2S_WS_PIN     5   // LRCLK      (shared by both I2S peripherals)
-#define I2S_DATA1_PIN  6   // SD1 — Mic1 (L) + Mic2 (R)
-#define I2S_DATA2_PIN  7   // SD2 — Mic3 (L) + Mic4 (R)
+#define I2S_DATA1_PIN  41  // SD1 — Mic1 (L) + Mic2 (R)
+#define I2S_DATA2_PIN  42  // SD2 — Mic3 (L) + Mic4 (R)
 #define BUTTON_PIN     0   // PRG button on Heltec V3
 #define LED_PIN        35  // White LED on Heltec V3
 
