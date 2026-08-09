@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <driver/i2s.h>
 #include <driver/gpio.h>
+#include <soc/gpio_sig_map.h>
 #include <WiFi.h>
 #include <WebServer.h>
 
@@ -121,20 +122,21 @@ static void i2sInit() {
 
     i2s_driver_install(I2S_PORT2, &i2s_config1, 0, NULL);
 
+    // Don't let i2s_set_pin touch the shared BCLK/WS pins — it would
+    // set them to GPIO_MODE_INPUT and disconnect the master's clock output.
     i2s_pin_config_t pin_config1 = {};
-    pin_config1.bck_io_num = I2S_BCK_PIN;
-    pin_config1.ws_io_num = I2S_WS_PIN;
+    pin_config1.bck_io_num = I2S_PIN_NO_CHANGE;
+    pin_config1.ws_io_num = I2S_PIN_NO_CHANGE;
     pin_config1.data_in_num = I2S_DATA2_PIN;
     pin_config1.data_out_num = I2S_PIN_NO_CHANGE;
 
     i2s_set_pin(I2S_PORT2, &pin_config1);
     i2s_zero_dma_buffer(I2S_PORT2);
 
-    // i2s_set_pin for the slave sets BCLK/WS to GPIO_MODE_INPUT, which
-    // disconnects the master's clock output on those shared pins.
-    // Restore to INPUT_OUTPUT so the master can drive and slave can read.
-    gpio_set_direction((gpio_num_t)I2S_BCK_PIN, GPIO_MODE_INPUT_OUTPUT);
-    gpio_set_direction((gpio_num_t)I2S_WS_PIN, GPIO_MODE_INPUT_OUTPUT);
+    // Manually route the shared BCLK/WS GPIOs to I2S1's clock input
+    // without disturbing the master's output on those same pins.
+    gpio_matrix_in(I2S_BCK_PIN, I2S1I_BCK_IN_IDX, false);
+    gpio_matrix_in(I2S_WS_PIN, I2S1I_WS_IN_IDX, false);
 }
 
 // ── Recording task (runs on core 1) ─────────────────────────────
